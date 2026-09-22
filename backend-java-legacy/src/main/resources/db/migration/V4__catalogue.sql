@@ -1,0 +1,32 @@
+INSERT INTO role_catalog(id,name,skills) VALUES
+('java-developer','Java Developer','["java-language","oop","collections","exceptions","dbms-sql"]'),
+('backend-developer','Backend Developer','["api-design","http","dbms-sql","dbms-transactions","backend-design"]'),
+('software-engineer','Software Engineer','["dsa-arrays","dsa-linked","dsa-stacks","dsa-trees","dsa-search-sort","oop","dbms-relational","os-processes"]');
+
+INSERT INTO topic(id,subject,name) VALUES
+('dsa-arrays','DSA','Arrays and strings'),
+('dsa-linked','DSA','Linked lists'),
+('dsa-stacks','DSA','Stacks and queues'),
+('dsa-trees','DSA','Trees'),
+('dsa-search-sort','DSA','Searching, sorting and complexity'),
+('dbms-relational','DBMS','Relational concepts'),
+('dbms-sql','DBMS','SQL and joins'),
+('dbms-normalization','DBMS','Normalization'),
+('dbms-transactions','DBMS','Transactions'),
+('dbms-indexing','DBMS','Indexing'),
+('os-processes','OS','Processes and threads'),
+('os-scheduling','OS','CPU scheduling'),
+('os-synchronization','OS','Synchronization'),
+('os-deadlocks','OS','Deadlocks'),
+('os-memory','OS','Memory management'),
+('java-language','INTERVIEW','Java language'),
+('oop','INTERVIEW','Object-oriented programming'),
+('collections','INTERVIEW','Java collections'),
+('exceptions','INTERVIEW','Exception handling'),
+('api-design','INTERVIEW','API design'),
+('http','INTERVIEW','HTTP'),
+('backend-design','INTERVIEW','Backend design'),
+('communication','HR','Communication and reflection'),
+('english-grammar','ENGLISH','Grammar'),
+('english-clarity','ENGLISH','Clarity'),
+('english-relevance','ENGLISH','Relevance');

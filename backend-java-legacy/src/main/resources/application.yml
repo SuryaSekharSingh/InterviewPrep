@@ -1,0 +1,24 @@
+server:
+  address: 127.0.0.1
+  port: ${PORT:8080}
+  error:
+    include-message: never
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://127.0.0.1:5432/interviewedge}
+    username: ${DB_USER:interviewedge}
+    password: ${DB_PASSWORD:}
+  servlet:
+    multipart:
+      max-file-size: 12MB
+      max-request-size: 13MB
+  flyway:
+    enabled: true
+edge:
+  admin-uids: ${ADMIN_UIDS:}
+  media-root: ${MEDIA_ROOT:.runtime/media}
+  ollama-url: ${OLLAMA_URL:http://127.0.0.1:11434}
+  ollama-model: ${OLLAMA_MODEL:qwen3:4b}
+  whisper-executable: ${WHISPER_EXECUTABLE:whisper-cli}
+  whisper-model: ${WHISPER_MODEL:.runtime/models/ggml-base.en.bin}
+  jobs-enabled: true
