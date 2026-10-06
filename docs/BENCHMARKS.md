@@ -39,6 +39,21 @@ The first follow-up copied the original question. The adapter now explicitly req
 
 All three opt-in live-provider checks passed in the former Spring adapter after this correction. One synthetic technical answer does not establish grading quality: the initial run rated reasoning 2/4 and a later run rated it 4/4. Reviewer calibration and repeatability evaluation remain required. FastAPI now owns the production Ollama and whisper.cpp adapters; the observations above remain historical feasibility measurements rather than current acceptance results.
 
+## Python scoring checks — 2026-10-06
+
+Seven opt-in checks passed with local `qwen3:4b`, thinking disabled, an 8192-token context and schema-constrained output. The schema restricts evidence to literal excerpts from the student's submitted text. A revised prompt explicitly requires grading understandable incorrect answers rather than excluding them as unscorable.
+
+| Synthetic assessment | Score | Observed duration |
+|---|---:|---:|
+| Technical explanation | 85 | 4.11 seconds |
+| HR teamwork response | 88.75 | 5.30 seconds |
+| English self-introduction | 75 | 4.75 seconds |
+| Short-answer primary key definition | 93.75 | 3.95 seconds |
+
+The additional checks verified rejection of an answer requesting full marks, ordering of correct/partial/incorrect technical answers (85 / 67.5 / 0), and the complete POST → queued job → AI short-answer feedback → GET report path. The endpoint's five-item fixture yielded 95 overall: four objective answers at 100 and one AI short answer at 75. The result remained provisional and excluded from progress pending review.
+
+The first run found paraphrased evidence, which validation rejected; selecting from exact source spans resolved it. A subsequent comparison found an incorrect response marked unscorable; the clarified grading instructions resolved that case. The final seven-check suite passed. These observations cover synthetic samples, not overall educational validity, stability across prompts, speech quality or concurrent-emulator performance.
+
 ## Remaining evaluation
 
 - Broader live interview, follow-up and evaluation coverage beyond the single synthetic example.

@@ -15,13 +15,23 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, Request, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Header,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import ai, config, security
 from .db import all_rows, one, run_migrations, transaction
 from .errors import ApiError, install_error_handlers
+from .scoring import ScoringRequest, ScoringStatus
 
 User = Annotated[str, Depends(security.current_user)]
 
@@ -104,15 +114,39 @@ def create_activity(
 
 
 def complete_activity(
-    connection, row: dict, report: dict, score: float | None, competencies: dict
+    connection,
+    row: dict,
+    report: dict,
+    score: float | None,
+    competencies: dict,
+    *,
+    eligible: bool = True,
 ):
-    completed = now()
+    completed = row.get("completed_at") or now()
+    eligible = eligible and score is not None
+    if (
+        row["state"] == "COMPLETED"
+        and loads(row.get("report")) == report
+        and row["eligible"] == eligible
+    ):
+        return
     connection.execute(
         "UPDATE activity SET state='COMPLETED',report=%s,score=%s,eligible=%s,"
         "version=version+1,completed_at=%s WHERE id=%s",
-        (dumps(report), score, score is not None, completed, row["id"]),
+        (dumps(report), score, eligible, completed, row["id"]),
     )
-    if score is not None:
+    # Regrading replaces evidence, including when an earlier score becomes ineligible.
+    connection.execute(
+        "DELETE FROM competency_evidence WHERE activity_id=%s", (row["id"],)
+    )
+    if not eligible:
+        connection.execute(
+            "DELETE FROM progress_activity WHERE activity_id=%s", (row["id"],)
+        )
+        connection.execute(
+            "DELETE FROM progress_snapshot WHERE source_activity=%s", (row["id"],)
+        )
+    else:
         context = loads(row["context"], {})
         retry_group = context.get("retryGroup") or row["id"]
         connection.execute(
@@ -154,9 +188,9 @@ def job_view(row: dict) -> dict:
 
 
 def enqueue_job(
-    connection, user_id: str, kind: str, activity_id: str, payload: dict
+    connection, user_id: str, kind: str, reference_id: str, payload: dict
 ) -> dict:
-    dedupe = f"{kind.lower()}:{activity_id}:{payload.get('sequence', '')}"
+    dedupe = f"{kind.lower()}:{reference_id}:{payload.get('sequence', '')}"
     existing = one(
         connection, "SELECT * FROM job WHERE dedupe_key=%s", (dedupe,), required=False
     )
@@ -165,7 +199,14 @@ def enqueue_job(
     job_id = str(uuid.uuid4())
     connection.execute(
         "INSERT INTO job(id,user_id,kind,payload,dedupe_key,activity_id) VALUES(%s,%s,%s,%s,%s,%s)",
-        (job_id, user_id, kind, dumps(payload), dedupe, activity_id),
+        (
+            job_id,
+            user_id,
+            kind,
+            dumps(payload),
+            dedupe,
+            None if kind == "TRANSCRIBE" else reference_id,
+        ),
     )
     _worker_wake.set()
     return one(connection, "SELECT * FROM job WHERE id=%s", (job_id,))
@@ -247,7 +288,7 @@ async def lifespan(_: FastAPI):
         worker.join(timeout=5)
 
 
-app = FastAPI(title="InterviewEdge local API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="InterviewEdge local API", version="0.3.0", lifespan=lifespan)
 install_error_handlers(app)
 _rate_lock = threading.Lock()
 _rate_windows: dict[str, deque[float]] = defaultdict(deque)
@@ -582,6 +623,8 @@ def save_test_response(activity_id: str, item_id: str, body: dict, user_id: User
 def submit_test(activity_id: str, user_id: User):
     with transaction() as connection:
         activity = owned_activity(connection, user_id, activity_id, True)
+        if activity["module"] != "TEST":
+            raise ApiError(404, "NOT_FOUND", "The test was not found.")
         if activity["state"] == "COMPLETED":
             return {"activityId": activity_id, "state": "COMPLETED"}
         job = enqueue_job(
@@ -604,6 +647,7 @@ def process_test(user_id: str, activity_id: str, job_id: str):
                 "FROM test_item i JOIN question q ON q.id=i.question_id WHERE i.activity_id=%s ORDER BY i.position",
                 (activity_id,),
             )
+        evaluation_failed = False
         for row in rows:
             if row["grading_status"] not in ("UNANSWERED", "PENDING"):
                 continue
@@ -621,15 +665,23 @@ def process_test(user_id: str, activity_id: str, job_id: str):
             else:
                 try:
                     evaluation = ai.evaluate(
-                        "SHORT_ANSWER", row["prompt"], row["answer"], response
+                        "SHORT_ANSWER",
+                        row["prompt"],
+                        row["answer"],
+                        response,
+                        criteria=loads(row["criteria"], []),
                     )
                     points = (
                         ai.score("SHORT_ANSWER", evaluation["dimensions"])
                         if evaluation["scorable"]
-                        else 0.0
+                        else None
                     )
-                    status, feedback = "PROVISIONAL", evaluation
+                    status, feedback = (
+                        ("PROVISIONAL" if evaluation["scorable"] else "PENDING"),
+                        evaluation,
+                    )
                 except Exception:
+                    evaluation_failed = True
                     points, status, feedback = (
                         None,
                         "PENDING",
@@ -643,7 +695,11 @@ def process_test(user_id: str, activity_id: str, job_id: str):
         with transaction() as connection:
             activity = owned_activity(connection, user_id, activity_id, True)
             build_test_report(connection, activity)
-        mark_job(job_id, "COMPLETED")
+        mark_job(
+            job_id,
+            "FAILED" if evaluation_failed else "COMPLETED",
+            "AI_EVALUATION_FAILED" if evaluation_failed else None,
+        )
     except Exception as error:
         mark_job(job_id, "FAILED", type(error).__name__)
 
@@ -656,6 +712,7 @@ def build_test_report(connection, activity: dict):
         (activity["id"],),
     )
     details, by_topic, pending, objective_points = [], {}, 0, []
+    provisional = any(row["grading_status"] == "PROVISIONAL" for row in rows)
     for row in rows:
         if row["grading_status"] == "PENDING":
             pending += 1
@@ -687,6 +744,7 @@ def build_test_report(connection, activity: dict):
         "score": score,
         "items": details,
         "pending": pending,
+        "provisional": provisional,
         "objectiveSubtotal": round(sum(objective_points) / len(objective_points), 2)
         if objective_points
         else None,
@@ -697,7 +755,9 @@ def build_test_report(connection, activity: dict):
         if score is not None
         else {}
     )
-    complete_activity(connection, activity, report, score, competencies)
+    complete_activity(
+        connection, activity, report, score, competencies, eligible=not provisional
+    )
 
 
 @app.get("/api/v1/tests/attempts/{activity_id}/result")
@@ -876,12 +936,14 @@ def get_interview(activity_id: str, user_id: User):
 def answer_interview(activity_id: str, body: dict, user_id: User):
     sequence, answer = body.get("sequence"), (body.get("text") or "").strip()
     submission = body.get("submissionKey")
+    media_id = body.get("mediaId")
     if (
         not isinstance(sequence, int)
         or not answer
         or len(answer) > 8000
         or not submission
         or len(submission) > 100
+        or (media_id is not None and (not isinstance(media_id, str) or not media_id))
     ):
         raise ApiError(
             422, "INVALID_INPUT", "An answer and submission key are required."
@@ -890,20 +952,37 @@ def answer_interview(activity_id: str, body: dict, user_id: User):
         activity = owned_activity(connection, user_id, activity_id, True)
         turn = one(
             connection,
-            "SELECT * FROM interview_turn WHERE activity_id=%s AND sequence=%s",
+            "SELECT * FROM interview_turn WHERE activity_id=%s AND sequence=%s FOR UPDATE",
             (activity_id, sequence),
         )
         if turn["answer"] is not None:
-            if turn["answer"] != answer or turn["submission_key"] != submission:
+            if (
+                turn["answer"] != answer
+                or turn["submission_key"] != submission
+                or turn["media_id"] != media_id
+            ):
                 raise ApiError(
                     409,
                     "ANSWER_EXISTS",
                     "This question already has an accepted answer.",
                 )
         else:
+            if media_id is not None:
+                media = one(
+                    connection,
+                    "SELECT state FROM media WHERE id=%s AND user_id=%s",
+                    (media_id, user_id),
+                    required=False,
+                )
+                if media is None or media["state"] != "READY":
+                    raise ApiError(
+                        422,
+                        "MEDIA_NOT_READY",
+                        "Review the transcript before attaching this recording.",
+                    )
             session = one(
                 connection,
-                "SELECT * FROM interview_session WHERE activity_id=%s",
+                "SELECT * FROM interview_session WHERE activity_id=%s FOR UPDATE",
                 (activity_id,),
             )
             if activity["state"] != "ACTIVE" or sequence != session["current_sequence"]:
@@ -922,7 +1001,7 @@ def answer_interview(activity_id: str, body: dict, user_id: User):
                 )
             connection.execute(
                 "UPDATE interview_turn SET answer=%s,media_id=%s,submission_key=%s WHERE id=%s",
-                (answer, body.get("mediaId"), submission, turn["id"]),
+                (answer, media_id, submission, turn["id"]),
             )
             connection.execute(
                 "UPDATE interview_session SET remaining_seconds=%s,current_started=NULL WHERE activity_id=%s",
@@ -939,6 +1018,12 @@ def answer_interview(activity_id: str, body: dict, user_id: User):
             {"activityId": activity_id, "sequence": sequence},
         )
         if job["state"] in ("FAILED", "QUEUED"):
+            if job["state"] == "FAILED" and job["attempts"] >= 5:
+                raise ApiError(
+                    409,
+                    "RETRY_LIMIT",
+                    "The retry limit was reached. Contact the administrator.",
+                )
             connection.execute(
                 "UPDATE job SET state='QUEUED',error_code=NULL WHERE id=%s",
                 (job["id"],),
@@ -958,6 +1043,14 @@ def process_interview_answer(
                 "SELECT * FROM interview_turn WHERE activity_id=%s AND sequence=%s",
                 (activity_id, sequence),
             )
+            session = one(
+                connection,
+                "SELECT * FROM interview_session WHERE activity_id=%s",
+                (activity_id,),
+            )
+        if activity["state"] == "COMPLETED" or session["current_sequence"] > sequence:
+            mark_job(job_id, "COMPLETED")
+            return
         evaluation = (
             loads(turn["evaluation"])
             if turn["evaluation"]
@@ -966,17 +1059,43 @@ def process_interview_answer(
             )
         )
         with transaction() as connection:
-            activity = owned_activity(connection, user_id, activity_id, True)
+            owned_activity(connection, user_id, activity_id, True)
             connection.execute(
                 "UPDATE interview_turn SET evaluation=%s WHERE id=%s",
                 (dumps(evaluation), turn["id"]),
             )
+        # Commit grading before generating a follow-up; generation failure must not
+        # discard valid assessment evidence or keep a DB lock during model inference.
+        generated = None
+        if (
+            activity["state"] != "FINISHING"
+            and evaluation["scorable"]
+            and turn["followup_depth"] < 2
+        ):
+            try:
+                generated = ai.follow_up(
+                    turn["kind"],
+                    turn["topic"],
+                    turn["prompt"],
+                    turn["answer"],
+                    turn["reference_answer"],
+                    turn["followup_depth"] + 1,
+                )
+            except Exception:
+                pass  # Fall back to the next published seed.
+        with transaction() as connection:
+            activity = owned_activity(connection, user_id, activity_id, True)
             session = one(
                 connection,
                 "SELECT * FROM interview_session WHERE activity_id=%s",
                 (activity_id,),
             )
             if (
+                activity["state"] == "COMPLETED"
+                or session["current_sequence"] > sequence
+            ):
+                pass
+            elif (
                 activity["state"] == "FINISHING"
                 or sequence + 1 >= session["max_questions"]
                 or now() >= session["wall_deadline"]
@@ -985,19 +1104,11 @@ def process_interview_answer(
             else:
                 depth = turn["followup_depth"]
                 next_turn = None
-                if evaluation["scorable"] and depth < 2:
-                    prompt = ai.follow_up(
-                        turn["kind"],
-                        turn["topic"],
-                        turn["prompt"],
-                        turn["answer"],
-                        turn["reference_answer"],
-                        depth + 1,
-                    )
+                if generated:
                     next_turn = (
                         turn["topic"],
                         turn["kind"],
-                        prompt,
+                        generated,
                         turn["reference_answer"],
                         depth + 1,
                     )
@@ -1091,7 +1202,10 @@ def build_interview_report(connection, activity: dict):
         "strengths": list(dict.fromkeys(strengths))[:3],
         "improvements": list(dict.fromkeys(improvements))[:3],
         "answers": details,
-        "rubricVersion": "rubric-v1",
+        "rubricVersion": ai.RUBRIC_VERSION,
+        "scoringVersion": ai.SCORING_VERSION,
+        "scorableAnswers": len(scores),
+        "totalAnswers": len(turns),
     }
     competencies = {
         topic: sum(values) / len(values) for topic, values in by_topic.items()
@@ -1103,6 +1217,8 @@ def build_interview_report(connection, activity: dict):
 def finish_interview(activity_id: str, user_id: User):
     with transaction() as connection:
         activity = owned_activity(connection, user_id, activity_id, True)
+        if activity["module"] != "INTERVIEW":
+            raise ApiError(404, "NOT_FOUND", "The interview was not found.")
         if activity["state"] == "COMPLETED":
             return {"activityId": activity_id, "state": "COMPLETED"}
         pending = one(
@@ -1123,6 +1239,17 @@ def finish_interview(activity_id: str, user_id: User):
             connection.execute(
                 "UPDATE activity SET state='FINISHING' WHERE id=%s", (activity_id,)
             )
+            if job["state"] == "FAILED":
+                if job["attempts"] >= 5:
+                    raise ApiError(
+                        409,
+                        "RETRY_LIMIT",
+                        "The retry limit was reached. Contact the administrator.",
+                    )
+                connection.execute(
+                    "UPDATE job SET state='QUEUED',error_code=NULL WHERE id=%s",
+                    (job["id"],),
+                )
             return {"activityId": activity_id, "jobId": job["id"]}
         build_interview_report(connection, activity)
         return {"activityId": activity_id, "state": "COMPLETED"}
@@ -1137,6 +1264,133 @@ def interview_report(activity_id: str, user_id: User):
             if activity["report"]
             else {"state": activity["state"]}
         )
+
+
+def scoring_view(connection, activity: dict) -> dict:
+    report = loads(activity["report"])
+    job = one(
+        connection,
+        "SELECT * FROM job WHERE activity_id=%s AND user_id=%s "
+        "AND kind IN ('GRADE_TEST','INTERVIEW_ANSWER','ENGLISH_REPORT') ORDER BY created_at DESC LIMIT 1",
+        (activity["id"], activity["user_id"]),
+        required=False,
+    )
+    state = "NOT_REQUESTED"
+    if activity["state"] == "COMPLETED" and report and not report.get("pending"):
+        state = "COMPLETED"
+    elif job and job["state"] in ("QUEUED", "RUNNING", "FAILED"):
+        state = job["state"]
+    elif activity["state"] == "COMPLETED":
+        state = "NEEDS_REVIEW" if report and report.get("pending") else "COMPLETED"
+    return {
+        "activityId": activity["id"],
+        "module": activity["module"],
+        "state": state,
+        "jobId": job["id"] if job else None,
+        "score": activity["score"] if state in ("COMPLETED", "NEEDS_REVIEW") else None,
+        "eligible": activity["eligible"] if state == "COMPLETED" else False,
+        "provisional": bool(report and report.get("provisional")),
+        "retryable": bool(state == "FAILED" and job and job["attempts"] < 5),
+        "errorCode": job["error_code"] if job and state == "FAILED" else None,
+        "report": report,
+    }
+
+
+@app.get(
+    "/api/v1/activities/{activity_id}/scoring",
+    response_model=ScoringStatus,
+    tags=["Scoring"],
+)
+def get_scoring(activity_id: str, user_id: User):
+    """Read scoring status, validated feedback and eligibility for an owned activity."""
+    with transaction() as connection:
+        return scoring_view(
+            connection, owned_activity(connection, user_id, activity_id)
+        )
+
+
+@app.post(
+    "/api/v1/activities/{activity_id}/scoring",
+    response_model=ScoringStatus,
+    tags=["Scoring"],
+    responses={
+        202: {
+            "model": ScoringStatus,
+            "description": "Scoring accepted; poll GET at the same URL.",
+        }
+    },
+)
+def request_scoring(
+    activity_id: str, body: ScoringRequest, response: Response, user_id: User
+):
+    """Finalize saved answers and queue scoring. Send {}. Repeats reuse the same job/result.
+
+    Questions, reference answers and rubric weights are read exclusively from server records.
+    Failed scoring may be retried up to five processing attempts. A test's objective
+    answers use its verified key; free-text answers use local AI and remain provisional.
+    """
+    with transaction() as connection:
+        activity = owned_activity(connection, user_id, activity_id, True)
+        current = scoring_view(connection, activity)
+        if activity["state"] == "COMPLETED" and current["state"] != "FAILED":
+            return current
+        payload = {"activityId": activity_id}
+        if activity["module"] == "TEST":
+            kind, state = "GRADE_TEST", "PROCESSING"
+        elif activity["module"] == "ENGLISH":
+            require_consent(connection, user_id)
+            attempt = one(
+                connection,
+                "SELECT confirmed_transcript FROM english_attempt WHERE activity_id=%s",
+                (activity_id,),
+            )
+            if not attempt["confirmed_transcript"]:
+                raise ApiError(
+                    409,
+                    "ANSWER_REQUIRED",
+                    "Submit your recording and confirmed transcript first.",
+                )
+            kind, state = "ENGLISH_REPORT", "PROCESSING"
+        else:
+            require_consent(connection, user_id)
+            answers = all_rows(
+                connection,
+                "SELECT sequence,evaluation FROM interview_turn WHERE activity_id=%s AND answer IS NOT NULL ORDER BY sequence",
+                (activity_id,),
+            )
+            if not answers:
+                raise ApiError(
+                    409, "ANSWER_REQUIRED", "Submit at least one answer before scoring."
+                )
+            pending = next((turn for turn in answers if not turn["evaluation"]), None)
+            if pending is None:
+                build_interview_report(connection, activity)
+                return scoring_view(
+                    connection, owned_activity(connection, user_id, activity_id)
+                )
+            payload["sequence"] = pending["sequence"]
+            kind, state = "INTERVIEW_ANSWER", "FINISHING"
+        job = enqueue_job(connection, user_id, kind, activity_id, payload)
+        if job["state"] == "FAILED":
+            if job["attempts"] >= 5:
+                raise ApiError(
+                    409,
+                    "RETRY_LIMIT",
+                    "The retry limit was reached. Contact the administrator.",
+                )
+            connection.execute(
+                "UPDATE job SET state='QUEUED',error_code=NULL WHERE id=%s",
+                (job["id"],),
+            )
+        connection.execute(
+            "UPDATE activity SET state=%s WHERE id=%s", (state, activity_id)
+        )
+        result = scoring_view(
+            connection, owned_activity(connection, user_id, activity_id)
+        )
+    response.status_code = 202
+    _worker_wake.set()
+    return result
 
 
 @app.get("/api/v1/jobs")
@@ -1174,6 +1428,12 @@ def retry_job(job_id: str, user_id: User):
         )
         if job["state"] != "FAILED":
             return job_view(job)
+        if job["attempts"] >= 5:
+            raise ApiError(
+                409,
+                "RETRY_LIMIT",
+                "The retry limit was reached. Contact the administrator.",
+            )
         connection.execute(
             "UPDATE job SET state='QUEUED',error_code=NULL WHERE id=%s", (job_id,)
         )
@@ -1390,7 +1650,9 @@ def create_english(
 @app.post("/api/v1/english/attempts/{activity_id}/submit")
 def submit_english(activity_id: str, body: dict, user_id: User):
     with transaction() as connection:
-        owned_activity(connection, user_id, activity_id, True)
+        activity = owned_activity(connection, user_id, activity_id, True)
+        if activity["module"] != "ENGLISH":
+            raise ApiError(404, "NOT_FOUND", "The English attempt was not found.")
         media = one(
             connection,
             "SELECT * FROM media WHERE id=%s AND user_id=%s",
@@ -1403,6 +1665,29 @@ def submit_english(activity_id: str, body: dict, user_id: User):
             raise ApiError(
                 422, "INVALID_INPUT", "Review the transcript before submitting."
             )
+        attempt = one(
+            connection,
+            "SELECT * FROM english_attempt WHERE activity_id=%s",
+            (activity_id,),
+        )
+        if activity["state"] != "ACTIVE":
+            if (
+                attempt["media_id"] != media["id"]
+                or attempt["confirmed_transcript"] != confirmed
+            ):
+                raise ApiError(
+                    409,
+                    "ANSWER_EXISTS",
+                    "This attempt already has an accepted answer. Start a retry attempt.",
+                )
+            job = enqueue_job(
+                connection,
+                user_id,
+                "ENGLISH_REPORT",
+                activity_id,
+                {"activityId": activity_id},
+            )
+            return {"activityId": activity_id, "jobId": job["id"]}
         connection.execute(
             "UPDATE english_attempt SET media_id=%s,raw_transcript=%s,confirmed_transcript=%s,edited=%s "
             "WHERE activity_id=%s",
@@ -1442,9 +1727,10 @@ def process_english(user_id: str, activity_id: str, job_id: str):
         evaluation = ai.evaluate(
             "ENGLISH", prompt, prompt, attempt["confirmed_transcript"]
         )
-        words = len(attempt["confirmed_transcript"].split())
+        # Delivery metrics describe the recording's raw transcript, even when edited.
+        words = len(attempt["raw_transcript"].split())
         fillers = sum(
-            attempt["confirmed_transcript"].lower().split().count(term)
+            attempt["raw_transcript"].lower().split().count(term)
             for term in ("um", "uh", "like")
         )
         result_score = (
@@ -1456,6 +1742,7 @@ def process_english(user_id: str, activity_id: str, job_id: str):
             "wordCount": words,
             "speakingRate": round(words * 60 / attempt["duration_seconds"], 1),
             "fillerCount": fillers,
+            "source": "rawTranscript",
         }
         report = {
             "module": "ENGLISH",
@@ -1465,7 +1752,7 @@ def process_english(user_id: str, activity_id: str, job_id: str):
             "rawTranscript": attempt["raw_transcript"],
             "edited": attempt["edited"],
             "metrics": metrics,
-            "rubricVersion": "rubric-v1",
+            "rubricVersion": evaluation["rubricVersion"],
         }
         with transaction() as connection:
             activity = owned_activity(connection, user_id, activity_id, True)
@@ -1485,7 +1772,7 @@ def process_english(user_id: str, activity_id: str, job_id: str):
                 report,
                 result_score,
                 {
-                    key: float(value) * 25
+                    "english-" + key: float(value) * 25
                     for key, value in evaluation["dimensions"].items()
                 }
                 if result_score is not None
@@ -2067,7 +2354,7 @@ def admin_reviews(_: Admin):
 def admin_review(activity_id: str, item_id: str, body: dict, actor: Admin):
     points, reason = body.get("points"), str(body.get("reason") or "").strip()
     if (
-        not isinstance(points, (int, float))
+        type(points) not in (int, float)
         or not 0 <= points <= 100
         or not reason
         or len(reason) > 2000
@@ -2078,6 +2365,19 @@ def admin_review(activity_id: str, item_id: str, body: dict, actor: Admin):
             "A score from 0 to 100 and review reason are required.",
         )
     with transaction() as connection:
+        activity = one(
+            connection, "SELECT * FROM activity WHERE id=%s FOR UPDATE", (activity_id,)
+        )
+        running = one(
+            connection,
+            "SELECT id FROM job WHERE activity_id=%s AND state IN ('QUEUED','RUNNING')",
+            (activity_id,),
+            required=False,
+        )
+        if running:
+            raise ApiError(
+                409, "STATE_CONFLICT", "Wait for scoring to finish before reviewing."
+            )
         changed = connection.execute(
             "UPDATE test_item SET points=%s,grading_status='REVIEWED',feedback=%s "
             "WHERE id=%s AND activity_id=%s AND grading_status IN ('PROVISIONAL','PENDING')",
@@ -2090,9 +2390,6 @@ def admin_review(activity_id: str, item_id: str, body: dict, actor: Admin):
         ).rowcount
         if changed != 1:
             raise ApiError(409, "STATE_CONFLICT", "Item is not awaiting review.")
-        activity = one(
-            connection, "SELECT * FROM activity WHERE id=%s FOR UPDATE", (activity_id,)
-        )
         build_test_report(connection, activity)
     return {"reviewed": True}
 

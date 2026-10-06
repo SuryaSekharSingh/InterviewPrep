@@ -14,13 +14,12 @@ public class LoginScreen extends BaseScreen {
       authenticated(null);
       return;
     }
-    heading(
-        "Welcome to InterviewEdge", "Focused practice for interviews, core CS and communication.");
+    heading("Find your interview edge.", "A little practice. A lot more confidence.");
     clear();
     card(
         "YOUR PLACEMENT PRACTICE",
         "Build confidence one session at a time",
-        "Your reports, progress and recovery details stay in your local setup.",
+        "Practise interviews, sharpen your knowledge and find your voice.",
         null);
     EditText username = field("Username", model.saved("username", ""), false);
     saved(username, "username");

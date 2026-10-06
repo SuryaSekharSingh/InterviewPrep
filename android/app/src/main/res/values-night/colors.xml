@@ -1,0 +1,13 @@
+<resources>
+    <color name="edge_background">#101C1D</color>
+    <color name="edge_surface">#1A2A2B</color>
+    <color name="edge_ink">#E7F2EF</color>
+    <color name="edge_muted">#A8BEBA</color>
+    <color name="edge_primary">#83D8C3</color>
+    <color name="edge_primary_dark">#A1E6D5</color>
+    <color name="edge_primary_soft">#25433C</color>
+    <color name="edge_on_primary">#00382F</color>
+    <color name="edge_success">#83D8C3</color>
+    <color name="edge_error">#FFB4A9</color>
+    <color name="edge_border">#344B47</color>
+</resources>

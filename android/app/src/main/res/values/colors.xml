@@ -1,12 +1,13 @@
 <resources>
-    <color name="edge_background">#F7F8FC</color>
+    <color name="edge_background">#F3F6F5</color>
     <color name="edge_surface">#FFFFFF</color>
-    <color name="edge_ink">#15213A</color>
-    <color name="edge_muted">#667085</color>
-    <color name="edge_primary">#4F46E5</color>
-    <color name="edge_primary_dark">#3730A3</color>
-    <color name="edge_primary_soft">#EEF2FF</color>
+    <color name="edge_ink">#172E30</color>
+    <color name="edge_muted">#526768</color>
+    <color name="edge_primary">#006B60</color>
+    <color name="edge_primary_dark">#004D45</color>
+    <color name="edge_primary_soft">#E0F2EC</color>
+    <color name="edge_on_primary">#FFFFFF</color>
     <color name="edge_success">#087E6B</color>
     <color name="edge_error">#B42318</color>
-    <color name="edge_border">#E4E7EC</color>
+    <color name="edge_border">#D8E3DF</color>
 </resources>

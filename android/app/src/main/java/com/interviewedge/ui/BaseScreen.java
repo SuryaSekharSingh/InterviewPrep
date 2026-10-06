@@ -7,7 +7,6 @@ import android.widget.*;
 import androidx.fragment.app.Fragment;
 import androidx.lifecycle.ViewModelProvider;
 import com.google.android.material.button.MaterialButton;
-import com.google.android.material.button.MaterialButtonToggleGroup;
 import com.google.android.material.card.MaterialCardView;
 import com.google.android.material.textfield.*;
 import com.google.gson.*;
@@ -62,12 +61,16 @@ public abstract class BaseScreen extends Fragment {
         });
     ((MainActivity) requireActivity()).navigation(!focus() && model.app().auth().uid() != null);
     render();
+    if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
+      view.setAlpha(0f);
+      view.animate().alpha(1f).setDuration(180).start();
+    }
   }
 
   private void enableButtons(ViewGroup group, boolean enabled) {
     for (int i = 0; i < group.getChildCount(); i++) {
       View v = group.getChildAt(i);
-      if (v instanceof MaterialButton) v.setEnabled(enabled);
+      if (v instanceof MaterialButton || v instanceof RadioButton) v.setEnabled(enabled);
       if (v instanceof ViewGroup g) enableButtons(g, enabled);
     }
   }
@@ -83,6 +86,10 @@ public abstract class BaseScreen extends Fragment {
     subtitle.setText(detail);
   }
 
+  protected int color(int resource) {
+    return androidx.core.content.ContextCompat.getColor(requireContext(), resource);
+  }
+
   protected int dp(int value) {
     return (int) (value * getResources().getDisplayMetrics().density);
   }
@@ -95,7 +102,8 @@ public abstract class BaseScreen extends Fragment {
     TextView v = new TextView(requireContext());
     v.setText(text);
     v.setTextSize(16);
-    v.setTextColor(0xff344054);
+    v.setTextColor(color(R.color.edge_muted));
+    v.setLineSpacing(dp(3), 1.0f);
     v.setPadding(0, dp(8), 0, dp(12));
     body.addView(v, new LinearLayout.LayoutParams(-1, -2));
     return v;
@@ -103,7 +111,9 @@ public abstract class BaseScreen extends Fragment {
 
   protected void section(String label) {
     TextView v = text(label);
-    v.setTextSize(18);
+    v.setTextSize(20);
+    v.setTextColor(color(R.color.edge_ink));
+    v.setPadding(0, dp(16), 0, dp(12));
     v.setTypeface(null, android.graphics.Typeface.BOLD);
     ViewCompatHelper.heading(v);
   }
@@ -124,8 +134,10 @@ public abstract class BaseScreen extends Fragment {
                 : com.google.android.material.R.attr.materialButtonOutlinedStyle);
     button.setText(label);
     button.setAllCaps(false);
-    button.setMinHeight(dp(52));
-    button.setCornerRadius(dp(14));
+    button.setMinHeight(dp(56));
+    button.setTextSize(16);
+    button.setPadding(dp(20), dp(12), dp(20), dp(12));
+    button.setCornerRadius(dp(18));
     button.setLetterSpacing(0);
     button.setElevation(0);
     LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
@@ -137,11 +149,12 @@ public abstract class BaseScreen extends Fragment {
 
   protected MaterialCardView card(String eyebrow, String heading, String detail, Runnable action) {
     MaterialCardView card = new MaterialCardView(requireContext());
-    card.setRadius(dp(18));
+    card.setRadius(dp(24));
+    card.setMinimumHeight(dp(64));
     card.setCardElevation(0);
     card.setStrokeWidth(dp(1));
-    card.setStrokeColor(0xffe4e7ec);
-    card.setCardBackgroundColor(0xffffffff);
+    card.setStrokeColor(color(R.color.edge_border));
+    card.setCardBackgroundColor(color(R.color.edge_surface));
     card.setClickable(action != null);
     card.setFocusable(action != null);
     LinearLayout content = new LinearLayout(requireContext());
@@ -150,15 +163,15 @@ public abstract class BaseScreen extends Fragment {
     if (eyebrow != null && !eyebrow.isBlank()) {
       TextView overline = new TextView(requireContext());
       overline.setText(eyebrow.toUpperCase(Locale.ROOT));
-      overline.setTextColor(0xff4f46e5);
+      overline.setTextColor(color(R.color.edge_primary));
       overline.setTextSize(12);
       overline.setTypeface(null, android.graphics.Typeface.BOLD);
-      overline.setLetterSpacing(.08f);
+      overline.setLetterSpacing(.06f);
       content.addView(overline);
     }
     TextView title = new TextView(requireContext());
     title.setText(heading + (action == null ? "" : "  ›"));
-    title.setTextColor(0xff15213a);
+    title.setTextColor(color(R.color.edge_ink));
     title.setTextSize(18);
     title.setTypeface(null, android.graphics.Typeface.BOLD);
     LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(-1, -2);
@@ -166,9 +179,10 @@ public abstract class BaseScreen extends Fragment {
     content.addView(title, titleParams);
     TextView description = new TextView(requireContext());
     description.setText(detail);
-    description.setTextColor(0xff667085);
-    description.setTextSize(14);
-    description.setLineSpacing(0, 1.15f);
+    description.setTextColor(color(R.color.edge_muted));
+    description.setTextSize(15);
+    description.setLineSpacing(dp(3), 1.0f);
+    if (detail == null || detail.isBlank()) description.setVisibility(View.GONE);
     content.addView(description);
     card.addView(content);
     LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
@@ -180,39 +194,34 @@ public abstract class BaseScreen extends Fragment {
 
   protected Choice choiceCards(String label, List<String> options, String selected) {
     section(label);
-    MaterialButtonToggleGroup group = new MaterialButtonToggleGroup(requireContext());
+    RadioGroup group = new RadioGroup(requireContext());
     group.setOrientation(LinearLayout.VERTICAL);
-    group.setSingleSelection(true);
-    group.setSelectionRequired(true);
     Map<Integer, String> values = new LinkedHashMap<>();
     for (String option : options) {
-      MaterialButton item =
-          new MaterialButton(
-              requireContext(),
-              null,
-              com.google.android.material.R.attr.materialButtonOutlinedStyle);
+      var item = new com.google.android.material.radiobutton.MaterialRadioButton(requireContext());
       item.setId(View.generateViewId());
       item.setText(option);
+      item.setTextColor(color(R.color.edge_ink));
+      item.setTextSize(16);
       item.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-      item.setCheckable(true);
-      item.setMinHeight(dp(52));
-      item.setCornerRadius(dp(14));
-      item.setLetterSpacing(0);
-      LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+      item.setMinHeight(dp(56));
+      item.setPadding(dp(16), dp(12), dp(16), dp(12));
+      item.setBackgroundResource(R.drawable.choice_background);
+      RadioGroup.LayoutParams params = new RadioGroup.LayoutParams(-1, -2);
       params.setMargins(0, 0, 0, dp(8));
       group.addView(item, params);
       values.put(item.getId(), option);
-      if (option.equals(selected)) item.setChecked(true);
+      if (option.equals(selected)) group.check(item.getId());
     }
-    if (group.getCheckedButtonId() == View.NO_ID && group.getChildCount() > 0)
-      ((MaterialButton) group.getChildAt(0)).setChecked(true);
+    if (group.getCheckedRadioButtonId() == View.NO_ID && group.getChildCount() > 0)
+      group.check(group.getChildAt(0).getId());
     body.addView(group, new LinearLayout.LayoutParams(-1, -2));
     return new Choice(group, values);
   }
 
-  protected record Choice(MaterialButtonToggleGroup group, Map<Integer, String> values) {
+  protected record Choice(RadioGroup group, Map<Integer, String> values) {
     public String value() {
-      return values.get(group.getCheckedButtonId());
+      return values.get(group.getCheckedRadioButtonId());
     }
   }
 
@@ -220,10 +229,17 @@ public abstract class BaseScreen extends Fragment {
     TextInputLayout layout = new TextInputLayout(requireContext());
     layout.setHint(label);
     layout.setBoxBackgroundMode(TextInputLayout.BOX_BACKGROUND_OUTLINE);
+    layout.setBoxStrokeColorStateList(
+        androidx.core.content.ContextCompat.getColorStateList(
+            requireContext(), R.color.field_stroke));
+    layout.setDefaultHintTextColor(
+        android.content.res.ColorStateList.valueOf(color(R.color.edge_muted)));
     TextInputEditText input = new TextInputEditText(layout.getContext());
     input.setText(value);
     input.setTextSize(16);
-    input.setMinHeight(dp(52));
+    input.setMinHeight(dp(56));
+    input.setTextColor(color(R.color.edge_ink));
+    input.setPadding(dp(16), dp(18), dp(16), dp(18));
     input.setInputType(
         multiline
             ? android.text.InputType.TYPE_CLASS_TEXT
@@ -231,6 +247,7 @@ public abstract class BaseScreen extends Fragment {
             : android.text.InputType.TYPE_CLASS_TEXT);
     if (multiline) {
       input.setMinLines(4);
+      input.setLineSpacing(dp(3), 1.0f);
       input.setGravity(Gravity.TOP);
     }
     layout.addView(input, new LinearLayout.LayoutParams(-1, -2));
@@ -250,7 +267,8 @@ public abstract class BaseScreen extends Fragment {
   protected Spinner choice(String label, List<String> options, String selected) {
     text(label);
     Spinner spinner = new Spinner(requireContext());
-    spinner.setMinimumHeight(dp(48));
+    spinner.setMinimumHeight(dp(56));
+    spinner.setPadding(dp(12), dp(8), dp(12), dp(8));
     spinner.setContentDescription(label);
     var adapter =
         new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_item, options);
@@ -263,6 +281,10 @@ public abstract class BaseScreen extends Fragment {
 
   protected void navigate(String route, Bundle args) {
     ((MainActivity) requireActivity()).show(route, args, true);
+  }
+
+  protected void replace(String route, Bundle args) {
+    ((MainActivity) requireActivity()).show(route, args, false);
   }
 
   protected void root(String route) {

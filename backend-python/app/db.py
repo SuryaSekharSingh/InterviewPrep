@@ -20,6 +20,7 @@ def connect(*, autocommit: bool = False):
         _dsn(),
         user=config.DB_USER,
         password=config.DB_PASSWORD,
+        connect_timeout=5,
         row_factory=dict_row,
         autocommit=autocommit,
     )

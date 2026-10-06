@@ -1,6 +1,6 @@
 # Implementation checkpoint
 
-Updated 2026-09-22. The backend migration is complete, but the full faculty-review release is still in progress.
+Updated 2026-10-06. The backend migration and scoring fixes are implemented, but the full faculty-review release is still in progress.
 
 ## Current decisions
 
@@ -29,6 +29,9 @@ Updated 2026-09-22. The backend migration is complete, but the full faculty-revi
 The archived `backend-java-legacy` directory is kept only for historical reference. FastAPI does not load code, migrations or static files from it.
 
 ## Verified
+
+- Scoring work on 2026-10-06: 52 automated checks and seven opt-in live Ollama checks passed. Coverage includes weighted totals, strict AI response validation, authentication/ownership, duplicate requests during inference, retry limits, review concurrency, invalidated evidence, immutable English submissions and real-model scoring through the new endpoint. See [SCORING-API.md](SCORING-API.md).
+- Real-model synthetic comparison: correct answer 85, partial answer 67.5, incorrect answer 0. These are individual checks, not validated assessment accuracy. See [BENCHMARKS.md](BENCHMARKS.md).
 
 - Python formatting and Ruff static checks pass.
 - FastAPI/PostgreSQL integration tests pass for account recovery, ownership, all three subjects at all difficulties, test submission/report generation, progress snapshots and all role/interview-type combinations.

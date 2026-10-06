@@ -4,19 +4,19 @@ import com.interviewedge.ui.BaseScreen;
 
 public class PracticeScreen extends BaseScreen {
   protected void render() {
-    heading("Practice", "Pick one focused activity. You can review every result afterwards.");
+    heading("Practice", "Three ways to grow. Choose your focus for today.");
     card(
-        "AI interview · 10–30 min",
+        "01 / INTERVIEW · 10–30 MIN",
         "Mock interview",
         "Practise technical, HR or mixed questions for your target role.",
         () -> navigate("InterviewSetup", args()));
     card(
-        "DSA · DBMS · OS",
+        "02 / KNOWLEDGE · DSA, DBMS & OS",
         "Subject test",
         "Answer five, ten or fifteen reviewed questions at your level.",
         () -> navigate("TestSetup", args()));
     card(
-        "Speaking · 2 min",
+        "03 / COMMUNICATION · 2 MIN",
         "Self-introduction",
         "Record, review your transcript and compare your next attempt.",
         () -> navigate("English", args()));

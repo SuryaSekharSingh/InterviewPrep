@@ -21,6 +21,8 @@ The project is still under development. The Android UI redesign is paused while 
 
 Firebase is not required. Accounts use local password login and one-time recovery codes.
 
+AI scoring is available through `POST` and `GET /api/v1/activities/{activityId}/scoring`. See [the scoring API guide](docs/SCORING-API.md) for submission, polling, retries, rubric weights and tests.
+
 ## First-time setup
 
 Install Python 3.11 or 3.12, JDK 17, Android Studio with Android SDK 35, and PostgreSQL. This workspace already contains a configured local PostgreSQL installation; a fresh clone needs the database setup described in [docs/SETUP.md](docs/SETUP.md).
@@ -82,6 +84,12 @@ Run `connect-emulator.ps1` again whenever the emulator is restarted. It forwards
 2. Run `start-local-ai.ps1` and `start-local.ps1 -UseWorkspaceDatabase`; keep that terminal open.
 3. Run `connect-emulator.ps1` in a second terminal.
 4. Press **Run ▶** in Android Studio.
+
+## Complete a mock interview
+
+From **Practice → Mock interview**, choose a role, skills, style, answer mode and duration. In voice mode, tap **Record answer**, then **Stop recording**. **Play recording** checks the saved audio on the emulator. **Review transcript** uploads it to the laptop and shows the recognized words in the answer field; correct recognition mistakes there. Tap **Submit answer and continue**. The app saves the answer, pauses answer time while the laptop evaluates it, and then shows the next question. Use **Check for next question** if the processing screen is still visible. **Finish interview** ends the session and opens its report.
+
+If transcription fails, the recording remains on the device and **Retry transcription** is available. You can also type the answer and choose **Submit text only**; that answer is scored as text without attaching the audio. The backend and Ollama must be running for feedback and follow-up questions. Voice transcription also needs whisper.cpp. A failed processing job appears with a retry action.
 
 ## Verification
 

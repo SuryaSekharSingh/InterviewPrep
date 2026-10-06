@@ -1,15 +1,20 @@
 <resources>
- <style name="Theme.InterviewEdge" parent="Theme.MaterialComponents.Light.NoActionBar">
+ <style name="Theme.InterviewEdge" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+  <item name="colorSurface">@color/edge_surface</item>
+  <item name="colorOnSurface">@color/edge_ink</item>
+  <item name="colorOnPrimary">@color/edge_on_primary</item>
+  <item name="android:textColorPrimary">@color/edge_ink</item>
+  <item name="android:textColorSecondary">@color/edge_muted</item>
   <item name="colorPrimary">@color/edge_primary</item><item name="colorPrimaryVariant">@color/edge_primary_dark</item>
   <item name="colorSecondary">@color/edge_success</item><item name="android:fontFamily">sans</item>
-  <item name="android:windowLightStatusBar">true</item><item name="android:statusBarColor">@color/edge_background</item>
+  <item name="android:windowLightStatusBar">@bool/edge_light_bars</item><item name="android:statusBarColor">@color/edge_background</item>
   <item name="android:navigationBarColor">@color/edge_surface</item><item name="android:windowBackground">@color/edge_background</item>
   <item name="android:colorAccent">@color/edge_primary</item>
   <item name="materialButtonStyle">@style/Widget.InterviewEdge.Button</item>
   <item name="textInputStyle">@style/Widget.InterviewEdge.TextInput</item>
  </style>
  <style name="Widget.InterviewEdge.Button" parent="Widget.MaterialComponents.Button">
-  <item name="cornerRadius">14dp</item><item name="android:minHeight">52dp</item>
+  <item name="cornerRadius">18dp</item><item name="android:minHeight">56dp</item>
   <item name="android:textAllCaps">false</item><item name="android:textSize">15sp</item>
   <item name="android:letterSpacing">0</item><item name="elevation">0dp</item>
  </style>
@@ -19,4 +24,5 @@
   <item name="boxStrokeColor">@color/edge_primary</item><item name="hintTextColor">@color/edge_muted</item>
  </style>
  <string name="app_name">InterviewEdge</string>
+ <bool name="edge_light_bars">true</bool>
 </resources>

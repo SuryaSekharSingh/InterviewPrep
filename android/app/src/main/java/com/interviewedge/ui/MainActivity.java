@@ -13,10 +13,14 @@ import com.interviewedge.ui.screens.*;
 public class MainActivity extends AppCompatActivity {
   private BottomNavigationView navigation;
   private boolean selectingNavigation;
+  private boolean navigationRequested;
+  private boolean keyboardVisible;
 
   public void onCreate(Bundle state) {
     super.onCreate(state);
     setContentView(R.layout.activity_main);
+    WindowCompat.getInsetsController(getWindow(), findViewById(R.id.root))
+        .setAppearanceLightNavigationBars(getResources().getBoolean(R.bool.edge_light_bars));
     ViewCompat.setOnApplyWindowInsetsListener(
         findViewById(R.id.root),
         (view, insets) -> {
@@ -24,7 +28,12 @@ public class MainActivity extends AppCompatActivity {
               insets.getInsets(
                   WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.ime());
           view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-          return insets;
+          keyboardVisible = insets.isVisible(WindowInsetsCompat.Type.ime());
+          if (navigation != null)
+            navigation.setVisibility(
+                navigationRequested && !keyboardVisible ? View.VISIBLE : View.GONE);
+          // The root owns system/IME spacing; don't apply it again inside the bottom bar.
+          return WindowInsetsCompat.CONSUMED;
         });
     navigation = findViewById(R.id.navigation);
     navigation.setOnItemSelectedListener(
@@ -86,6 +95,7 @@ public class MainActivity extends AppCompatActivity {
   }
 
   public void navigation(boolean visible) {
-    navigation.setVisibility(visible ? View.VISIBLE : View.GONE);
+    navigationRequested = visible;
+    navigation.setVisibility(visible && !keyboardVisible ? View.VISIBLE : View.GONE);
   }
 }

@@ -1,7 +1,9 @@
 package com.interviewedge.ui.screens;
 
 import android.widget.LinearLayout;
+import com.google.android.material.progressindicator.LinearProgressIndicator;
 import com.google.gson.*;
+import com.interviewedge.R;
 import com.interviewedge.ui.*;
 
 public class HomeScreen extends BaseScreen {
@@ -12,21 +14,52 @@ public class HomeScreen extends BaseScreen {
         value -> {
           clear();
           JsonObject o = value.getAsJsonObject();
-          heading("Hi, " + s(o, "displayName"), "Keep your next step simple.");
-          text(s(o, "scoreLabel"));
+          heading("Hi, " + s(o, "displayName"), "Make room for your next opportunity.");
           Double score =
               o.get("overallScore").isJsonNull() ? null : o.get("overallScore").getAsDouble();
-          ScoreRing ring = new ScoreRing(requireContext(), score);
-          body.addView(ring, new LinearLayout.LayoutParams(-1, dp(220)));
-          ring.setOnClickListener(v -> root("Progress"));
-          ring.setFocusable(true);
+          var hero =
+              card(
+                  "YOUR NEXT CHAPTER",
+                  score == null ? "Your next interview starts here." : "Keep your momentum going.",
+                  score == null
+                      ? "One focused session is all it takes to discover your starting point."
+                      : "Build on what you know. A little practice today makes a difference.",
+                  null);
+          hero.setCardBackgroundColor(color(R.color.edge_primary_soft));
+          hero.setStrokeWidth(0);
+          button("Start a practice session", () -> root("Practice"));
+
+          section("Your week at a glance");
+          var weekly =
+              card(
+                  "WEEKLY GOAL",
+                  s(o, "weeklyCompleted") + " of " + s(o, "weeklyGoal") + " activities",
+                  "Progress comes from showing up. Keep taking small steps.",
+                  null);
+          LinearLayout weeklyContent = (LinearLayout) weekly.getChildAt(0);
+          LinearProgressIndicator progress = new LinearProgressIndicator(requireContext());
+          progress.setTrackThickness(dp(6));
+          progress.setTrackCornerRadius(dp(3));
+          progress.setIndicatorColor(color(R.color.edge_primary));
+          progress.setTrackColor(color(R.color.edge_primary_soft));
+          int completed = o.get("weeklyCompleted").getAsInt();
+          int goal = o.get("weeklyGoal").getAsInt();
+          progress.setProgress(goal > 0 ? Math.max(0, Math.min(100, completed * 100 / goal)) : 0);
+          progress.setContentDescription(
+              completed + " of " + goal + " weekly activities completed");
+          LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(-1, dp(6));
+          progressParams.topMargin = dp(16);
+          weeklyContent.addView(progress, progressParams);
           card(
-              "WEEKLY GOAL",
-              s(o, "weeklyCompleted") + " of " + s(o, "weeklyGoal") + " activities",
-              "Small, consistent sessions build stronger interview recall.",
-              null);
+              "PRACTICE SCORE",
+              score == null ? "A fresh start" : score(o, "overallScore"),
+              score == null
+                  ? "Complete your first activity to build your baseline."
+                  : s(o, "scoreLabel") + " · See your strengths and progress.",
+              () -> root("Progress"));
           JsonArray rec = o.getAsJsonArray("recommendations");
           if (!rec.isEmpty()) {
+            section("Made for your next step");
             var r = rec.get(0).getAsJsonObject();
             card(
                 "RECOMMENDED NEXT",
@@ -36,7 +69,7 @@ public class HomeScreen extends BaseScreen {
                     navigate(
                         route(s(r, "module")),
                         args("topicId", s(r, "topicId"), "difficulty", s(r, "difficulty"))));
-          } else button("Choose practice", () -> root("Practice"));
+          }
         });
   }
 

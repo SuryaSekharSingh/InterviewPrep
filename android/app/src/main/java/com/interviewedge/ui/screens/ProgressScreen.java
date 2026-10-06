@@ -12,13 +12,23 @@ public class ProgressScreen extends BaseScreen {
           clear();
           var o = value.getAsJsonObject();
           var summary = o.getAsJsonObject("summary");
-          section(score(summary, "overallScore"));
+          card(
+              "YOUR PRACTICE SCORE",
+              score(summary, "overallScore"),
+              "A snapshot of the skills you are building.",
+              null);
           text(
               "Practice score = Interview 40% + Tests 40% + English 20%. This is not a placement"
                   + " prediction.");
           var modules = summary.getAsJsonObject("moduleScores");
           for (String key : new String[] {"INTERVIEW", "TEST", "ENGLISH"})
-            text(key.toLowerCase() + " · " + score(modules, key));
+            card(
+                key.equals("INTERVIEW")
+                    ? "INTERVIEW"
+                    : key.equals("TEST") ? "KNOWLEDGE" : "COMMUNICATION",
+                score(modules, key),
+                "",
+                null);
           button("Topic strengths and gaps", this::competencies);
           button("Activity history", () -> navigate("History", args()));
           button("All recommendations", this::recommendations);

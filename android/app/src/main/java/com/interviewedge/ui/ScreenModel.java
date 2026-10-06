@@ -69,6 +69,10 @@ public class ScreenModel extends AndroidViewModel {
     run(() -> app().repository().upload(owner, file), result);
   }
 
+  public void upload(File file, Consumer<JsonElement> result, Consumer<String> onError) {
+    run(() -> app().repository().upload(owner, file), result, onError);
+  }
+
   public void draft(String id, String value) {
     state.set("draft:" + id, value);
     app().repository().queueDraft(owner, id, value);
@@ -84,6 +88,10 @@ public class ScreenModel extends AndroidViewModel {
   }
 
   public <T> void run(Callable<T> work, Consumer<T> result) {
+    run(work, result, null);
+  }
+
+  private <T> void run(Callable<T> work, Consumer<T> result, Consumer<String> onError) {
     busy.setValue(true);
     message.setValue("");
     executor.execute(
@@ -103,7 +111,9 @@ public class ScreenModel extends AndroidViewModel {
             main.post(
                 () -> {
                   busy.setValue(false);
-                  message.setValue(e.getMessage() == null ? "Please retry." : e.getMessage());
+                  String error = e.getMessage() == null ? "Please retry." : e.getMessage();
+                  message.setValue(error);
+                  if (onError != null) onError.accept(error);
                   if (expired) signedOut.setValue(true);
                 });
           }

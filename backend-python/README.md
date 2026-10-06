@@ -7,6 +7,7 @@ This is the primary InterviewEdge backend.
 - `app/main.py` — versioned HTTP API, domain workflows and the durable single-job worker.
 - `app/security.py` — password hashing, opaque sessions and recovery codes.
 - `app/ai.py` — replaceable Ollama and whisper.cpp adapters.
+- `app/scoring.py` — typed scoring request/status contracts; see [the API guide](../docs/SCORING-API.md).
 - `app/db.py` — PostgreSQL access and migration runner.
 - `migrations/` — schema, catalogue and starter-content migrations.
 - `static/admin/` — local content administration interface.

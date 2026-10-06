@@ -1,4 +1,4 @@
 <resources>
-    <dimen name="edge_screen_horizontal">24dp</dimen>
+    <dimen name="edge_screen_horizontal">20dp</dimen>
     <dimen name="edge_radius">16dp</dimen>
 </resources>

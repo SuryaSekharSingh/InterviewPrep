@@ -18,8 +18,10 @@ public abstract class RecordingScreen extends BaseScreen {
   private MediaPlayer player;
   private final Handler handler = new Handler(Looper.getMainLooper());
   private TextView status;
+  private Button retryTranscription;
   private long started;
   private int max;
+  private int recordingGeneration;
   private Consumer<JsonObject> ready;
   private final ActivityResultLauncher<String> permission =
       registerForActivityResult(
@@ -33,7 +35,7 @@ public abstract class RecordingScreen extends BaseScreen {
   protected void recordingControls(int seconds, Consumer<JsonObject> onReady) {
     max = seconds;
     ready = onReady;
-    status = text("Your microphone is off.");
+    status = text(hasRecording() ? "Recording saved on this device. Play or review it." : "Your microphone is off.");
     button(
         "Record answer",
         () -> {
@@ -46,49 +48,91 @@ public abstract class RecordingScreen extends BaseScreen {
     button(
         "Play recording",
         () -> {
+          if (isRecording()) {
+            message.setText("Stop recording before playback.");
+            return;
+          }
+          File file = existingRecording();
+          if (file == null || file.length() <= 44) {
+            message.setText("Record an answer first.");
+            return;
+          }
           try {
             stopPlayback();
             player = new MediaPlayer();
-            player.setDataSource(audioFile().getAbsolutePath());
+            player.setDataSource(file.getAbsolutePath());
+            player.setOnCompletionListener(p -> {
+              stopPlayback();
+              if (status != null) status.setText("Playback finished. Review the transcript or record again.");
+            });
             player.prepare();
             player.start();
+            status.setText("Playing your recording…");
           } catch (Exception e) {
-            message.setText("Record an answer first.");
+            stopPlayback();
+            message.setText("This recording could not be played. Please record again.");
           }
         });
     button(
         "Review transcript",
         () -> {
-          File file = audioFile();
-          if (recorder != null && recorder.recording()) {
+          File file = existingRecording();
+          if (isRecording()) {
             message.setText("Stop recording first.");
             return;
           }
-          if (!file.isFile() || file.length() <= 44) {
+          if (file == null || file.length() <= 44) {
             message.setText("Record an answer first.");
             return;
           }
+          int generation = recordingGeneration;
+          status.setText("Uploading your recording…");
           model.upload(
               file,
               value -> {
-                if (!isAdded()) return;
+                if (!isAdded() || generation != recordingGeneration) return;
                 var o = value.getAsJsonObject();
-                model.save("mediaId", o.getAsJsonObject("media").get("id").getAsString());
-                waitForTranscript(s(o, "jobId"));
+                var media = o.getAsJsonObject("media");
+                String mediaId = s(media, "id");
+                if ("READY".equals(s(media, "state"))) {
+                  model.save("mediaId", mediaId);
+                  status.setText("Transcript ready. Review your answer before submitting.");
+                  if (ready != null) ready.accept(media);
+                } else {
+                  status.setText("Transcribing on your laptop…");
+                  waitForTranscript(s(o, "jobId"), mediaId, generation);
+                }
+              },
+              error -> {
+                if (isAdded() && generation == recordingGeneration && status != null)
+                  status.setText("Upload failed. Your recording is saved here; tap Review transcript to retry.");
               });
         });
-    text("Your recording is processed on the laptop. You can replace it before submitting.");
+    text("Review the transcript to attach the recording. If transcription is unavailable, type your answer and submit it as text.");
   }
 
-  private File audioFile() {
+  private File existingRecording() {
     String name = model.saved("audioFile", "");
-    if (name.isBlank()) {
-      name =
-          new File(requireContext().getFilesDir(), "answer-" + java.util.UUID.randomUUID() + ".wav")
-              .getAbsolutePath();
-      model.save("audioFile", name);
-    }
-    return new File(name);
+    return name.isBlank() ? null : new File(name);
+  }
+
+  protected boolean hasRecording() {
+    File file = existingRecording();
+    return file != null && file.isFile() && file.length() > 44;
+  }
+
+  protected boolean isRecording() {
+    return recorder != null && recorder.recording();
+  }
+
+  protected void clearRecordingForNextQuestion() {
+    recordingGeneration++;
+    handler.removeCallbacksAndMessages(null);
+    stopPlayback();
+    File file = existingRecording();
+    if (file != null) file.delete();
+    model.save("audioFile", "");
+    model.save("mediaId", "");
   }
 
   private void startRecording() {
@@ -97,9 +141,17 @@ public abstract class RecordingScreen extends BaseScreen {
       stopPlayback();
       if (recorder != null) recorder.release();
       recorder = new PcmRecorder();
-      recorder.start(audioFile(), max);
+      File previous = existingRecording();
+      File next = new File(requireContext().getFilesDir(), "answer-" + java.util.UUID.randomUUID() + ".wav");
+      recorder.start(next, max);
+      recordingGeneration++;
+      handler.removeCallbacksAndMessages(null);
+      if (previous != null) previous.delete();
+      model.save("audioFile", next.getAbsolutePath());
       started = SystemClock.elapsedRealtime();
       model.save("mediaId", "");
+      if (retryTranscription != null) retryTranscription.setVisibility(android.view.View.GONE);
+      message.setText("");
       tickRecording();
     } catch (Exception e) {
       message.setText("Microphone unavailable. Try again.");
@@ -121,36 +173,48 @@ public abstract class RecordingScreen extends BaseScreen {
   }
 
   private void stopRecording() {
-    if (recorder == null) return;
+    if (recorder == null || !recorder.recording()) return;
     try {
       recorder.stop();
-      if (status != null) status.setText("Recording stopped. Ready for review.");
+      if (status != null)
+        status.setText(hasRecording() ? "Recording saved. Play it or review the transcript." : "No audio was captured. Record again.");
     } catch (Exception e) {
       if (message != null) message.setText(e.getMessage());
     }
   }
 
-  private void waitForTranscript(String jobId) {
+  private void waitForTranscript(String jobId, String mediaId, int generation) {
+    if (jobId.isBlank() || generation != recordingGeneration) {
+      message.setText("Transcription could not start. Please try Review transcript again.");
+      return;
+    }
     get(
         "jobs/" + jobId,
         value -> {
+          if (generation != recordingGeneration) return;
           String state = s(value.getAsJsonObject(), "state");
           if (state.equals("COMPLETED"))
             get(
-                "media/" + model.saved("mediaId", ""),
+                "media/" + mediaId,
                 m -> {
+                  if (generation != recordingGeneration) return;
+                  model.save("mediaId", mediaId);
+                  status.setText("Transcript ready. Review your answer before submitting.");
                   if (ready != null) ready.accept(m.getAsJsonObject());
                 });
           else if (state.equals("FAILED")) {
-            message.setText("Transcription failed. Check the local speech service.");
-            button(
-                "Retry transcription",
-                () ->
-                    write(
-                        "POST", "jobs/" + jobId + "/retry", json(), v -> waitForTranscript(jobId)));
+            status.setText("Transcription failed. Your recording is still saved.");
+            message.setText("Check the local speech service, retry, or type your answer below.");
+            if (retryTranscription == null) {
+              retryTranscription = button("Retry transcription", () -> {
+                status.setText("Retrying transcription…");
+                write("POST", "jobs/" + jobId + "/retry", json(), v -> waitForTranscript(jobId, mediaId, generation));
+              });
+            }
+            retryTranscription.setVisibility(android.view.View.VISIBLE);
           } else {
             status.setText("Transcribing on your laptop…");
-            handler.postDelayed(() -> waitForTranscript(jobId), 2500);
+            handler.postDelayed(() -> waitForTranscript(jobId, mediaId, generation), 2500);
           }
         });
   }
@@ -169,8 +233,12 @@ public abstract class RecordingScreen extends BaseScreen {
   }
 
   public void onDestroyView() {
+    recordingGeneration++;
     handler.removeCallbacksAndMessages(null);
     if (recorder != null) recorder.release();
+    stopPlayback();
+    retryTranscription = null;
+    status = null;
     super.onDestroyView();
   }
 }

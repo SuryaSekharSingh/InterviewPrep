@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "InterviewEdge local API",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "paths": {
     "/health": {
@@ -943,6 +943,130 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/activities/{activity_id}/scoring": {
+      "get": {
+        "tags": [
+          "Scoring"
+        ],
+        "summary": "Get Scoring",
+        "description": "Read scoring status, validated feedback and eligibility for an owned activity.",
+        "operationId": "get_scoring_api_v1_activities__activity_id__scoring_get",
+        "parameters": [
+          {
+            "name": "activity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Activity Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScoringStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Scoring"
+        ],
+        "summary": "Request Scoring",
+        "description": "Finalize saved answers and queue scoring. Send {}. Repeats reuse the same job/result.\n\nQuestions, reference answers and rubric weights are read exclusively from server records.\nFailed scoring may be retried up to five processing attempts. A test's objective\nanswers use its verified key; free-text answers use local AI and remain provisional.",
+        "operationId": "request_scoring_api_v1_activities__activity_id__scoring_post",
+        "parameters": [
+          {
+            "name": "activity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Activity Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScoringRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScoringStatus"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Scoring accepted; poll GET at the same URL.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScoringStatus"
+                }
               }
             }
           },
@@ -2200,6 +2324,110 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "ScoringRequest": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ScoringRequest"
+      },
+      "ScoringStatus": {
+        "properties": {
+          "activityId": {
+            "type": "string",
+            "title": "Activityid"
+          },
+          "module": {
+            "type": "string",
+            "enum": [
+              "TEST",
+              "INTERVIEW",
+              "ENGLISH"
+            ],
+            "title": "Module"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "NOT_REQUESTED",
+              "QUEUED",
+              "RUNNING",
+              "FAILED",
+              "COMPLETED",
+              "NEEDS_REVIEW"
+            ],
+            "title": "State"
+          },
+          "jobId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jobid"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "eligible": {
+            "type": "boolean",
+            "title": "Eligible"
+          },
+          "provisional": {
+            "type": "boolean",
+            "title": "Provisional",
+            "default": false
+          },
+          "retryable": {
+            "type": "boolean",
+            "title": "Retryable",
+            "default": false
+          },
+          "errorCode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errorcode"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report"
+          }
+        },
+        "type": "object",
+        "required": [
+          "activityId",
+          "module",
+          "state",
+          "eligible"
+        ],
+        "title": "ScoringStatus"
       },
       "ValidationError": {
         "properties": {
