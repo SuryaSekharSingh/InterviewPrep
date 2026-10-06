@@ -254,46 +254,57 @@ def test_interview_grade_survives_failed_followup_and_finalize_repeats(
     assert len(calls) == 1
 
 
-def test_english_saved_transcript_scores_and_cannot_be_overwritten(client):
-    session, headers = register(client)
+def test_written_english_scores_and_cannot_be_overwritten(client):
+    _, headers = register(client)
     consent(client, headers)
+    creation_key = str(uuid.uuid4())
     response = client.post(
         "/api/v1/english/attempts",
-        headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
+        headers={**headers, "Idempotency-Key": creation_key},
         json={},
     )
     assert response.status_code == 200, response.text
     activity_id = response.json()["activity"]["id"]
+    repeated = client.post(
+        "/api/v1/english/attempts",
+        headers={**headers, "Idempotency-Key": creation_key},
+        json={},
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["activity"]["id"] == activity_id
+    with transaction() as connection:
+        version = connection.execute(
+            "SELECT prompt_version FROM english_attempt WHERE activity_id=%s",
+            (activity_id,),
+        ).fetchone()["prompt_version"]
+    assert version == "intro-written-v1"
     assert (
         client.post(
             f"/api/v1/activities/{activity_id}/scoring", headers=headers, json={}
         ).status_code
         == 409
     )
-    media_id = str(uuid.uuid4())
-    raw = "I am a student building a library application."
-    edited = raw + " I want to become a backend developer."
-    with transaction() as connection:
-        connection.execute(
-            "INSERT INTO media(id,user_id,storage_key,bytes,duration_seconds,checksum,state,transcript,delete_after) "
-            "VALUES(%s,%s,%s,32044,60,%s,'READY',%s,CURRENT_TIMESTAMP + INTERVAL '7 days')",
-            (media_id, session["userId"], media_id + ".wav", uuid.uuid4().hex, raw),
-        )
+    answer = "I am a student building a library application. I want to become a backend developer."
     submit_path = f"/api/v1/english/attempts/{activity_id}/submit"
-    submitted = client.post(
-        submit_path, headers=headers, json={"mediaId": media_id, "transcript": edited}
+    assert (
+        client.post(
+            submit_path, headers=headers, json={"transcript": answer}
+        ).status_code
+        == 422
     )
+    submitted = client.post(submit_path, headers=headers, json={"text": answer})
     assert submitted.status_code == 200, submitted.text
     assert wait_job(client, headers, submitted.json()["jobId"])["state"] == "COMPLETED"
     result = score_request(client, headers, activity_id)
     assert result["score"] == 75 and result["eligible"]
-    assert result["report"]["metrics"]["wordCount"] == len(raw.split())
-    assert result["report"]["edited"]
+    assert result["report"]["answer"] == answer
+    assert result["report"]["promptVersion"] == "intro-written-v1"
+    assert "metrics" not in result["report"]
     assert (
         client.post(
             submit_path,
             headers=headers,
-            json={"mediaId": media_id, "transcript": "Replace the original answer."},
+            json={"text": "Replace the original answer."},
         ).status_code
         == 409
     )
@@ -301,7 +312,7 @@ def test_english_saved_transcript_scores_and_cannot_be_overwritten(client):
         client.post(
             submit_path,
             headers=headers,
-            json={"mediaId": media_id, "transcript": edited},
+            json={"text": answer},
         ).status_code
         == 200
     )
@@ -309,8 +320,39 @@ def test_english_saved_transcript_scores_and_cannot_be_overwritten(client):
     assert exported.status_code == 200
     with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
         attempts = json.loads(archive.read("english-attempts.json"))
-        assert attempts[0]["confirmed_transcript"] == edited
+        assert attempts[0]["answer"] == answer
     assert score_request(client, headers, activity_id)["score"] == 75
+    retry = client.post(
+        "/api/v1/english/attempts",
+        headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
+        json={"previousId": activity_id},
+    )
+    assert retry.status_code == 200, retry.text
+    with transaction() as connection:
+        connection.execute(
+            "UPDATE english_attempt SET prompt_version='intro-v1' WHERE activity_id=%s",
+            (activity_id,),
+        )
+    incompatible = client.post(
+        "/api/v1/english/attempts",
+        headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
+        json={"previousId": activity_id},
+    )
+    assert incompatible.status_code == 409
+
+
+def test_retired_transcription_job_cannot_be_retried(client):
+    session, headers = register(client)
+    job_id = str(uuid.uuid4())
+    with transaction() as connection:
+        connection.execute(
+            "INSERT INTO job(id,user_id,kind,payload,dedupe_key,state,error_code) "
+            "VALUES(%s,%s,'TRANSCRIBE','{}',%s,'FAILED','AUDIO_FEATURE_REMOVED')",
+            (job_id, session["userId"], job_id),
+        )
+    response = client.post(f"/api/v1/jobs/{job_id}/retry", headers=headers)
+    assert response.status_code == 409
+    assert response.json()["code"] == "FEATURE_REMOVED"
 
 
 def test_duplicate_requests_during_inference_share_job_and_review_waits(

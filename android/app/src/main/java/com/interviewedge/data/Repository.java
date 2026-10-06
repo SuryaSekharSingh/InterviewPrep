@@ -91,16 +91,6 @@ public class Repository {
         expected);
   }
 
-  public JsonElement upload(String owner, File file) throws Exception {
-    SessionSnapshot expected = session(owner);
-    return execute(
-        api.upload(
-            "Bearer " + expected.token(),
-            MultipartBody.Part.createFormData(
-                "file", "recording.wav", RequestBody.create(file, MediaType.get("audio/wav")))),
-        expected);
-  }
-
   private JsonElement execute(retrofit2.Call<JsonElement> call, SessionSnapshot expected)
       throws Exception {
     requireCurrent(expected);

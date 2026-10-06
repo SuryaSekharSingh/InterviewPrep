@@ -6,7 +6,6 @@ import androidx.lifecycle.*;
 import com.google.gson.*;
 import com.interviewedge.EdgeApp;
 import com.interviewedge.data.Repository;
-import java.io.File;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
@@ -63,14 +62,6 @@ public class ScreenModel extends AndroidViewModel {
   public void write(String method, String path, JsonElement body, Consumer<JsonElement> result) {
     String submissionKey = key();
     run(() -> app().repository().write(owner, method, path, body, submissionKey), result);
-  }
-
-  public void upload(File file, Consumer<JsonElement> result) {
-    run(() -> app().repository().upload(owner, file), result);
-  }
-
-  public void upload(File file, Consumer<JsonElement> result, Consumer<String> onError) {
-    run(() -> app().repository().upload(owner, file), result, onError);
   }
 
   public void draft(String id, String value) {

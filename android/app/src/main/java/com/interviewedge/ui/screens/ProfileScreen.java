@@ -65,12 +65,9 @@ public class ProfileScreen extends BaseScreen {
     List<String> goals = new ArrayList<>();
     for (int i = 1; i <= 30; i++) goals.add(Integer.toString(i));
     Spinner goal = choice("Weekly practice goal", goals, s(profile, "weeklyGoal"));
-    Spinner retention =
-        choice("Recording retention in days", List.of("7", "30"), s(profile, "retentionDays"));
     CheckBox consent = new CheckBox(requireContext());
     consent.setText(
-        "I agree to processing my answers and recordings for practice feedback. Reports remain"
-            + " until account deletion; recordings expire after the selected retention period.");
+        "I agree to processing my written answers for practice feedback. Reports remain until account deletion.");
     consent.setChecked("privacy-v1".equals(s(profile, "consentVersion")));
     consent.setMinHeight(dp(48));
     body.addView(consent);
@@ -97,8 +94,6 @@ public class ProfileScreen extends BaseScreen {
                   skills,
                   "weeklyGoal",
                   Integer.parseInt(goal.getSelectedItem().toString()),
-                  "retentionDays",
-                  Integer.parseInt(retention.getSelectedItem().toString()),
                   "consentVersion",
                   consent.isChecked() ? "privacy-v1" : ""),
               saved -> message.setText("Profile saved."));
@@ -111,7 +106,7 @@ public class ProfileScreen extends BaseScreen {
             new MaterialAlertDialogBuilder(requireContext())
                 .setTitle("Delete your account?")
                 .setMessage(
-                    "Your profile, reports and recordings will be removed. This cannot be undone.")
+                    "Your profile and reports will be removed. This cannot be undone.")
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton(
                     "Continue",

@@ -34,8 +34,6 @@ public class ReportScreen extends BaseScreen {
             return;
           }
           section(score(o, "score"));
-          if (o.has("edited") && o.get("edited").getAsBoolean())
-            text("Edited transcript · language practice only. Excluded from speaking progress.");
           if (o.has("pending") && o.get("pending").getAsInt() > 0)
             text(
                 s(o, "pending")
@@ -44,31 +42,26 @@ public class ReportScreen extends BaseScreen {
           if (o.has("strengths")) text("Strengths\n" + list(o.get("strengths")));
           if (o.has("improvements")) text("Focus next\n" + list(o.get("improvements")));
           if (o.has("evaluation")) evaluation(o.getAsJsonObject("evaluation"));
-          if (o.has("metrics")) {
-            var m = o.getAsJsonObject("metrics");
-            text(
-                "Approximate speaking rate: "
-                    + s(m, "wordsPerMinute")
-                    + " words/min\nApproximate fillers: "
-                    + s(m, "fillerCount"));
-          }
           if (o.has("change"))
             text("Change from previous comparable attempt: " + s(o, "change") + " points");
-          if (o.has("transcript"))
+          if (module.equals("ENGLISH") && o.has("answer"))
             button(
-                "Review transcript",
+                "Review your introduction",
                 () -> {
                   clear();
-                  heading("Your transcript", "");
-                  text(s(o, "transcript"));
+                  heading("Your introduction", "");
+                  text(s(o, "answer"));
                   button("Back to report", this::render);
                 });
           if (o.has("items"))
             button("Review questions", () -> reviewItems(o.getAsJsonArray("items")));
           if (o.has("answers"))
             button("Review interview answers", () -> reviewAnswers(o.getAsJsonArray("answers")));
-          if (module.equals("ENGLISH"))
-            button("Try again", () -> navigate("English", args("previousId", id)));
+          if (module.equals("ENGLISH")) {
+            if (s(o, "promptVersion").equals("intro-written-v1"))
+              button("Try again", () -> navigate("English", args("previousId", id)));
+            else button("Start written practice", () -> navigate("English", args()));
+          }
           else button("Choose next practice", () -> root("Practice"));
           button("View progress", () -> root("Progress"));
         });
@@ -110,7 +103,7 @@ public class ReportScreen extends BaseScreen {
 
   private void reviewAnswers(JsonArray answers) {
     clear();
-    heading("Answer review", "Feedback relates to your recorded response.");
+    heading("Answer review", "Feedback relates to your written response.");
     for (var value : answers) {
       var a = value.getAsJsonObject();
       section(s(a, "question"));

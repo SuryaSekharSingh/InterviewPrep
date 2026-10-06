@@ -109,9 +109,7 @@ def test_unscorable_answer_does_not_receive_interview_floor(monkeypatch):
     result.update(scorable=False, evidence=[])
     monkeypatch.setattr(ai, "_call", lambda *args: copy.deepcopy(result))
 
-    scored = ai.evaluate(
-        "TECHNICAL", "Question", "Reference", "Off-topic response."
-    )
+    scored = ai.evaluate("TECHNICAL", "Question", "Reference", "Off-topic response.")
 
     assert scored["score"] is None
     assert scored["dimensions"]["relevance"] == 0

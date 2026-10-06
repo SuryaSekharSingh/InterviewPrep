@@ -66,9 +66,6 @@ public class InterviewSetupScreen extends BaseScreen {
             step(0);
           });
     } else {
-      Choice mode =
-          choiceCards(
-              "Answer mode", List.of("Text", "Voice"), titleCase(model.saved("mode", "TEXT")));
       Choice minutes =
           choiceCards(
               "Answer time",
@@ -77,12 +74,11 @@ public class InterviewSetupScreen extends BaseScreen {
       card(
           "GOOD TO KNOW",
           "Your full answer time is protected",
-          "AI processing does not use your answer time. Voice answers are recorded one at a time.",
+          "AI processing does not use your answer time. Type each answer to continue.",
           null);
       button(
           "Start interview",
           () -> {
-            model.save("mode", mode.value().toUpperCase(Locale.ROOT));
             model.save("minutes", minutes.value().split(" ")[0]);
             JsonObject body =
                 json(
@@ -95,7 +91,7 @@ public class InterviewSetupScreen extends BaseScreen {
                     "difficulty",
                     model.saved("difficulty", "MEDIUM"),
                     "answerMode",
-                    model.saved("mode", "TEXT"),
+                    "TEXT",
                     "minutes",
                     Integer.parseInt(model.saved("minutes", "10")));
             write(
@@ -118,7 +114,6 @@ public class InterviewSetupScreen extends BaseScreen {
       button(
           "Back",
           () -> {
-            model.save("mode", mode.value().toUpperCase(Locale.ROOT));
             model.save("minutes", minutes.value().split(" ")[0]);
             step(1);
           });
@@ -129,7 +124,7 @@ public class InterviewSetupScreen extends BaseScreen {
     return switch (step) {
       case 0 -> "Role";
       case 1 -> "Style";
-      default -> "Answer mode";
+      default -> "Answer time";
     };
   }
 

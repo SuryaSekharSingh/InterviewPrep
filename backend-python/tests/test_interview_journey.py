@@ -1,7 +1,4 @@
-import io
-import struct
 import uuid
-import wave
 
 from app import ai
 from test_core import consent, register
@@ -10,78 +7,48 @@ from test_scoring_api import wait_job
 pytest_plugins = ("test_scoring_api",)
 
 
-def one_second_wav() -> bytes:
-    output = io.BytesIO()
-    with wave.open(output, "wb") as recording:
-        recording.setnchannels(1)
-        recording.setsampwidth(2)
-        recording.setframerate(16000)
-        recording.writeframes(
-            b"".join(struct.pack("<h", 4000 if i % 2 else -4000) for i in range(16000))
-        )
-    return output.getvalue()
-
-
-def test_voice_answer_followup_and_report(client, monkeypatch):
-    monkeypatch.setattr(
-        ai, "transcribe", lambda path: "An array supports indexed access."
-    )
+def test_text_answer_followup_and_report(client, monkeypatch):
     monkeypatch.setattr(
         ai, "follow_up", lambda *args: "Why is array indexed access constant time?"
     )
     _, headers = register(client)
     consent(client, headers)
+    settings = {
+        "roleId": "java-developer",
+        "skills": ["java-language", "oop", "collections"],
+        "type": "TECHNICAL",
+        "difficulty": "EASY",
+        "answerMode": "TEXT",
+        "minutes": 10,
+    }
+    rejected = client.post(
+        "/api/v1/interviews",
+        headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
+        json={**settings, "answerMode": "VOICE"},
+    )
+    assert rejected.status_code == 422
     created = client.post(
         "/api/v1/interviews",
         headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
-        json={
-            "roleId": "java-developer",
-            "skills": ["java-language", "oop", "collections"],
-            "type": "TECHNICAL",
-            "difficulty": "EASY",
-            "answerMode": "VOICE",
-            "minutes": 10,
-        },
+        json=settings,
     )
     assert created.status_code == 200, created.text
     activity_id = created.json()["activity"]["id"]
     assert created.json()["sequence"] == 0
 
-    uploaded = client.post(
-        "/api/v1/media",
-        headers=headers,
-        files={"file": ("answer.wav", one_second_wav(), "audio/wav")},
-    )
-    assert uploaded.status_code == 200, uploaded.text
-    media_id = uploaded.json()["media"]["id"]
-    assert wait_job(client, headers, uploaded.json()["jobId"])["state"] == "COMPLETED"
-    media = client.get(f"/api/v1/media/{media_id}", headers=headers).json()
-    assert media["state"] == "READY"
-    assert media["transcript"] == "An array supports indexed access."
-
-    _, other_headers = register(client)
-    foreign = client.post(
-        f"/api/v1/interviews/{activity_id}/answers",
-        headers=headers,
-        json={
-            "sequence": 0,
-            "text": media["transcript"],
-            "mediaId": str(uuid.uuid4()),
-            "submissionKey": str(uuid.uuid4()),
-        },
-    )
-    assert foreign.status_code == 422
-    assert (
-        client.get(f"/api/v1/media/{media_id}", headers=other_headers).status_code
-        == 404
-    )
-
     first_body = {
         "sequence": 0,
-        "text": media["transcript"],
-        "mediaId": media_id,
+        "text": "An array supports indexed access.",
         "submissionKey": str(uuid.uuid4()),
     }
+    rejected_media = client.post(
+        f"/api/v1/interviews/{activity_id}/answers",
+        headers=headers,
+        json={**first_body, "mediaId": str(uuid.uuid4())},
+    )
+    assert rejected_media.status_code == 422
+    assert client.post("/api/v1/media", headers=headers).status_code == 404
+
     first = client.post(
         f"/api/v1/interviews/{activity_id}/answers", headers=headers, json=first_body
     )
@@ -111,7 +78,6 @@ def test_voice_answer_followup_and_report(client, monkeypatch):
         json={
             "sequence": 1,
             "text": "The address is computed from the base and index without a search.",
-            "mediaId": None,
             "submissionKey": str(uuid.uuid4()),
         },
     )

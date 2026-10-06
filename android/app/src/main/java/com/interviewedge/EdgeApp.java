@@ -37,9 +37,6 @@ public class EdgeApp extends Application {
       repository.clear(uid);
     }
     deletePrivateFiles(getCacheDir());
-    java.io.File[] recordings =
-        getFilesDir().listFiles((dir, name) -> name.startsWith("answer-") && name.endsWith(".wav"));
-    if (recordings != null) for (java.io.File recording : recordings) recording.delete();
     return true;
   }
 

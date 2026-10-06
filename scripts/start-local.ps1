@@ -20,17 +20,19 @@ if ($UseWorkspaceDatabase) {
     $env:DB_PASSWORD = (Get-Content -LiteralPath $passwordFile -Raw).Trim()
 }
 if (!$env:DB_PASSWORD) { throw 'Set DB_PASSWORD, or use -UseWorkspaceDatabase after initializing the workspace database.' }
-$env:MEDIA_ROOT = Join-Path $projectRoot '.runtime/media'
-if (!$env:WHISPER_EXECUTABLE -and (Test-Path '.tools/whisper/Release/whisper-cli.exe')) {
-    $env:WHISPER_EXECUTABLE = Join-Path $projectRoot '.tools/whisper/Release/whisper-cli.exe'
-}
-if (!$env:WHISPER_MODEL -and (Test-Path '.runtime/models/ggml-base.en.bin')) {
-    $env:WHISPER_MODEL = Join-Path $projectRoot '.runtime/models/ggml-base.en.bin'
-}
 if (!$env:PYTHONPATH) { $env:PYTHONPATH = Join-Path $projectRoot 'backend-python' }
 $python = Join-Path $projectRoot '.tools/python-backend/Scripts/python.exe'
 if (!(Test-Path -LiteralPath $python)) {
     throw 'The Python backend environment is missing. Run .\scripts\setup-python-backend.ps1 first.'
+}
+$portCheck = [System.Net.Sockets.TcpClient]::new()
+try {
+    $portCheck.Connect('127.0.0.1', 8080)
+    throw 'Port 8080 already has a running backend. Stop its terminal with Ctrl+C before starting this version.'
+} catch [System.Net.Sockets.SocketException] {
+    # A refused connection means this backend can bind port 8080.
+} finally {
+    $portCheck.Dispose()
 }
 Write-Output 'Starting the InterviewEdge FastAPI backend on http://127.0.0.1:8080.'
 Write-Output 'API documentation: http://127.0.0.1:8080/docs  (press Ctrl+C to stop)'

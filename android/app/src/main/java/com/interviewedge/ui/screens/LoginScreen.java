@@ -19,7 +19,7 @@ public class LoginScreen extends BaseScreen {
     card(
         "YOUR PLACEMENT PRACTICE",
         "Build confidence one session at a time",
-        "Practise interviews, sharpen your knowledge and find your voice.",
+        "Practise interviews, sharpen your knowledge and improve your English.",
         null);
     EditText username = field("Username", model.saved("username", ""), false);
     saved(username, "username");

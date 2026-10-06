@@ -4,9 +4,13 @@ This is the primary InterviewEdge backend.
 
 ## Components
 
-- `app/main.py` — versioned HTTP API, domain workflows and the durable single-job worker.
+- `app/main.py` — application assembly, test/interview/English state transitions, scoring and the durable single-job worker.
+- `app/progress.py` — dashboard, competency and recommendation read models and routes.
+- `app/admin.py` — reviewed-question validation and content administration routes. Reviewer score finalization remains in `main.py` with the test report transaction.
+- `app/account.py` — account export and deletion, including retained legacy media cleanup.
+- `app/shared.py` — small JSON and UTC-time helpers used across feature modules.
 - `app/security.py` — password hashing, opaque sessions and recovery codes.
-- `app/ai.py` — replaceable Ollama and whisper.cpp adapters.
+- `app/ai.py` — local Ollama evaluation and follow-up adapter.
 - `app/scoring.py` — typed scoring request/status contracts; see [the API guide](../docs/SCORING-API.md).
 - `app/db.py` — PostgreSQL access and migration runner.
 - `migrations/` — schema, catalogue and starter-content migrations.

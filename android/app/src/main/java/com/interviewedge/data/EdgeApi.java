@@ -27,10 +27,6 @@ public interface EdgeApi {
   @DELETE
   Call<JsonElement> delete(@Header("Authorization") String auth, @Url String path);
 
-  @Multipart
-  @POST("media")
-  Call<JsonElement> upload(@Header("Authorization") String auth, @Part MultipartBody.Part file);
-
   @POST("me/exports")
   Call<ResponseBody> export(@Header("Authorization") String auth);
 }

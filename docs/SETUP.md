@@ -7,7 +7,6 @@
 - Android Studio, Android SDK 35 and one Android emulator.
 - PostgreSQL 17 bound to loopback.
 - Ollama with `qwen3:4b` for AI evaluation.
-- whisper.cpp with `ggml-base.en.bin` for recorded answers.
 
 Firebase, Google Services files and paid cloud accounts are not required.
 
@@ -31,7 +30,6 @@ For a manually installed database, set:
 $env:DB_URL = 'postgresql://127.0.0.1:5432/interviewedge'
 $env:DB_USER = 'interviewedge'
 $env:DB_PASSWORD = '<local password>'
-$env:MEDIA_ROOT = (Join-Path (Get-Location) '.runtime/media')
 .\scripts\start-local.ps1
 ```
 
@@ -43,7 +41,7 @@ This configured workspace instead uses a private database at port 55432 and stor
 
 FastAPI applies the versioned SQL files from `backend-python/migrations` at startup. It recognizes migrations previously recorded by Flyway, so existing Spring Boot data remains usable. Never edit an applied migration; add a new numbered migration.
 
-## AI and transcription
+## Local AI
 
 On this configured laptop:
 
@@ -58,12 +56,9 @@ Configuration overrides:
 
 - `OLLAMA_URL` — Ollama address.
 - `OLLAMA_MODEL` — text model identifier.
-- `WHISPER_EXECUTABLE` — full path to `whisper-cli.exe`.
-- `WHISPER_MODEL` — full path to `ggml-base.en.bin`.
-- `MEDIA_ROOT` — private recording directory.
 - `ADMIN_UIDS` — comma-separated account IDs allowed to use `/api/v1/admin`.
 
-The backend processes one heavy grading or transcription job at a time. Jobs are stored in PostgreSQL and queued/running jobs are recovered when FastAPI restarts.
+The backend processes one grading job at a time. Jobs are stored in PostgreSQL and queued/running jobs are recovered when FastAPI restarts.
 
 ## Emulator connection
 
@@ -107,6 +102,6 @@ These local paths are not included in a clone.
 
 ## Backup and shutdown
 
-Stop accepting work before backup. Back up PostgreSQL with `pg_dump` and copy `.runtime/media` while writes are stopped. Restore and verify the database and media together.
+Stop accepting work before backup. Back up PostgreSQL with `pg_dump` and verify restoration. Existing installations may still have legacy audio files in `.runtime/media`; keep these with their historical backup until the account owner decides how to dispose of them.
 
 Stop FastAPI with **Ctrl+C**. Then stop the workspace database with `scripts/stop-workspace-database.ps1` if desired. Do not delete database or media folders to recover a failed job.

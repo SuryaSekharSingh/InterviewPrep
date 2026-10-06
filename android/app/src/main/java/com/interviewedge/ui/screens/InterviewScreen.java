@@ -9,9 +9,9 @@ import androidx.activity.OnBackPressedCallback;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.gson.*;
 import com.interviewedge.R;
-import com.interviewedge.ui.RecordingScreen;
+import com.interviewedge.ui.BaseScreen;
 
-public class InterviewScreen extends RecordingScreen {
+public class InterviewScreen extends BaseScreen {
   private final Handler polling = new Handler(Looper.getMainLooper());
   private final Handler countdown = new Handler(Looper.getMainLooper());
   private TextView timeRemaining;
@@ -70,41 +70,13 @@ public class InterviewScreen extends RecordingScreen {
             return;
           }
           int seq = o.get("sequence").getAsInt();
-          String previousSequence = model.saved("voiceSequence", "");
-          if (!previousSequence.isBlank() && !previousSequence.equals(Integer.toString(seq)))
-            clearRecordingForNextQuestion();
-          model.save("voiceSequence", Integer.toString(seq));
           var turn = o.getAsJsonArray("turns").get(seq).getAsJsonObject();
           heading("Question " + (seq + 1), s(turn, "topic").replace('-', ' '));
           answerDeadline = SystemClock.elapsedRealtime() + Math.max(0, o.get("remainingSeconds").getAsInt()) * 1000L;
           timeRemaining = text("");
           updateCountdown();
           section(s(turn, "question"));
-          boolean voice = s(a.getAsJsonObject("context"), "answerMode").equals("VOICE");
-          final EditText[] answerField = new EditText[1];
-          if (voice)
-            recordingControls(180, media -> {
-              String transcript = s(media, "transcript").trim();
-              if (transcript.isEmpty()) {
-                message.setText("No speech was recognized. Record again or type your answer.");
-                return;
-              }
-              EditText answer = answerField[0];
-              if (answer == null) return;
-              String current = answer.getText().toString().trim();
-              if (current.isEmpty() || current.equals(transcript)) {
-                answer.setText(transcript);
-                message.setText("Transcript loaded. Correct recognition mistakes, then submit your answer.");
-              } else {
-                new MaterialAlertDialogBuilder(requireContext())
-                    .setTitle("Transcript is ready")
-                    .setMessage("Use the recognized words or keep the answer you typed?")
-                    .setPositiveButton("Use transcript", (dialog, which) -> answer.setText(transcript))
-                    .setNegativeButton("Keep my answer", null)
-                    .show();
-              }
-            });
-          answerField[0] = answerEditor(seq, voice);
+          answerEditor(seq);
           button(
               "Finish interview",
               () -> new MaterialAlertDialogBuilder(requireContext())
@@ -127,10 +99,6 @@ public class InterviewScreen extends RecordingScreen {
   }
 
   private void finishInterview() {
-    if (isRecording()) {
-      message.setText("Stop recording before finishing the interview.");
-      return;
-    }
     write(
         "POST",
         "interviews/" + argument("id") + "/finish",
@@ -138,9 +106,9 @@ public class InterviewScreen extends RecordingScreen {
         result -> replace("Report", args("id", argument("id"), "module", "INTERVIEW", "jobId", s(result.getAsJsonObject(), "jobId"))));
   }
 
-  private EditText answerEditor(int seq, boolean voice) {
+  private EditText answerEditor(int seq) {
     EditText answer =
-        field(voice ? "Review transcript or type your answer" : "Your answer", model.saved("answer-" + seq, ""), true);
+        field("Your answer", model.saved("answer-" + seq, ""), true);
     saved(answer, "answer-" + seq);
     var submit = button(
         "Submit answer and continue",
@@ -149,25 +117,12 @@ public class InterviewScreen extends RecordingScreen {
             message.setText("Answer time has ended. Finish the interview to see your report.");
             return;
           }
-          if (isRecording()) {
-            message.setText("Stop recording before submitting your answer.");
-            return;
-          }
           String text = answer.getText().toString().trim();
           if (text.isEmpty()) {
-            message.setText("Enter an answer or review your recording before continuing.");
+            message.setText("Enter an answer before continuing.");
             return;
           }
-          if (voice && hasRecording() && model.saved("mediaId", "").isBlank()) {
-            new MaterialAlertDialogBuilder(requireContext())
-                .setTitle("Recording not attached")
-                .setMessage("Review transcript to attach your recording. You can also submit the written answer without audio.")
-                .setPositiveButton("Submit text only", (dialog, which) -> submitAnswer(seq, text, null))
-                .setNegativeButton("Review recording", null)
-                .show();
-            return;
-          }
-          submitAnswer(seq, text, voice ? model.saved("mediaId", "") : null);
+          submitAnswer(seq, text);
         });
     submit.setBackgroundTintList(ColorStateList.valueOf(requireContext().getColor(R.color.edge_primary)));
     submit.setTextColor(Color.WHITE);
@@ -175,7 +130,7 @@ public class InterviewScreen extends RecordingScreen {
     return answer;
   }
 
-  private void submitAnswer(int seq, String text, String mediaId) {
+  private void submitAnswer(int seq, String text) {
     String submission = model.saved("submission-" + seq, "");
     if (submission.isBlank()) {
       submission = java.util.UUID.randomUUID().toString();
@@ -189,14 +144,9 @@ public class InterviewScreen extends RecordingScreen {
             seq,
             "text",
             text,
-            "mediaId",
-            mediaId == null || mediaId.isBlank() ? null : mediaId,
             "submissionKey",
             submission),
-        value -> {
-          clearRecordingForNextQuestion();
-          render();
-        });
+        value -> render());
   }
 
   public void onDestroyView() {

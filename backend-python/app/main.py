@@ -1,80 +1,38 @@
+"""Core API: assessment sessions, scoring, and durable background jobs.
+
+Read-only progress, account data, and content administration routes are registered
+from their feature modules below. Keep state transitions here so transaction and
+job-finalization rules remain in one place.
+"""
+
 from __future__ import annotations
 
 import hashlib
-import json
-import os
 import random
-import tempfile
 import threading
 import time
 import uuid
-import wave
-import zipfile
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Annotated
 
-from fastapi import (
-    BackgroundTasks,
-    Depends,
-    FastAPI,
-    File,
-    Header,
-    Request,
-    Response,
-    UploadFile,
-)
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import Depends, FastAPI, Header, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, config, security
+from . import account, admin, ai, config, progress, security
+from .admin import Admin
 from .db import all_rows, one, run_migrations, transaction
 from .errors import ApiError, install_error_handlers
+from .progress import activity_view, profile_row, progress_summary
 from .scoring import ScoringRequest, ScoringStatus
+from .shared import dumps, loads, now
 
 User = Annotated[str, Depends(security.current_user)]
 
 
-def admin_user(user_id: User) -> str:
-    if user_id not in config.ADMIN_UIDS:
-        raise ApiError(403, "FORBIDDEN", "Administrator access is required.")
-    return user_id
-
-
-Admin = Annotated[str, Depends(admin_user)]
-
-
-def dumps(value) -> str:
-    return json.dumps(value, separators=(",", ":"), default=str)
-
-
-def loads(value, fallback=None):
-    if value is None:
-        return fallback
-    return json.loads(value) if isinstance(value, str) else value
-
-
-def now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def activity_view(row: dict) -> dict:
-    return {
-        "id": row["id"],
-        "userId": row["user_id"],
-        "module": row["module"],
-        "state": row["state"],
-        "context": loads(row["context"], {}),
-        "report": loads(row.get("report")),
-        "score": row.get("score"),
-        "eligible": row["eligible"],
-        "version": row["version"],
-        "createdAt": row["created_at"],
-        "completedAt": row.get("completed_at"),
-    }
-
-
+# Shared activity finalization and job lifecycle.
 def owned_activity(connection, user_id: str, activity_id: str, lock=False) -> dict:
     suffix = " FOR UPDATE" if lock else ""
     return one(
@@ -205,7 +163,7 @@ def enqueue_job(
             kind,
             dumps(payload),
             dedupe,
-            None if kind == "TRANSCRIBE" else reference_id,
+            reference_id,
         ),
     )
     _worker_wake.set()
@@ -222,7 +180,7 @@ def mark_job(job_id: str, state: str, error: str | None = None):
 
 _worker_stop = threading.Event()
 _worker_wake = threading.Event()
-_worker_kinds = ("GRADE_TEST", "INTERVIEW_ANSWER", "TRANSCRIBE", "ENGLISH_REPORT")
+_worker_kinds = ("GRADE_TEST", "INTERVIEW_ANSWER", "ENGLISH_REPORT")
 
 
 def dispatch_job(job: dict):
@@ -233,8 +191,6 @@ def dispatch_job(job: dict):
         process_interview_answer(
             job["user_id"], payload["activityId"], payload["sequence"], job["id"]
         )
-    elif job["kind"] == "TRANSCRIBE":
-        process_transcription(job["user_id"], payload["mediaId"], job["id"])
     elif job["kind"] == "ENGLISH_REPORT":
         process_english(job["user_id"], payload["activityId"], job["id"])
 
@@ -269,7 +225,6 @@ def job_worker():
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     run_migrations()
-    config.MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
     with transaction() as connection:
         connection.execute(
             "UPDATE job SET state='QUEUED',lease_until=NULL WHERE state='RUNNING' "
@@ -339,6 +294,7 @@ def health():
     return {"application": "InterviewEdge", "backend": "FastAPI", "status": "UP"}
 
 
+# Authentication, profile, and catalogue.
 @app.post("/api/v1/auth/register")
 def auth_register(body: dict):
     return security.register(body.get("username"), body.get("password"))
@@ -384,20 +340,6 @@ def auth_logout(authorization: Annotated[str, Header()], _: User):
     return {"signedOut": True}
 
 
-def profile_row(connection, user_id: str) -> dict:
-    row = one(connection, "SELECT * FROM profile WHERE user_id=%s", (user_id,))
-    return {
-        "displayName": row["display_name"],
-        "roleId": row["role_id"],
-        "weeklyGoal": row["weekly_goal"],
-        "education": row["education"],
-        "skills": loads(row["skills"], []),
-        "timezone": row["timezone"],
-        "retentionDays": row["retention_days"],
-        "consentVersion": row["consent_version"],
-    }
-
-
 @app.get("/api/v1/me")
 def get_profile(user_id: User):
     with transaction() as connection:
@@ -409,11 +351,11 @@ def update_profile(body: dict, user_id: User):
     with transaction() as connection:
         current = profile_row(connection, user_id)
         value = {**current, **body}
-        if not 1 <= int(value["weeklyGoal"]) <= 30 or int(
-            value["retentionDays"]
-        ) not in (7, 30):
+        if not 1 <= int(value["weeklyGoal"]) <= 30:
+            raise ApiError(422, "INVALID_INPUT", "Check the weekly goal.")
+        if "retentionDays" in body:
             raise ApiError(
-                422, "INVALID_INPUT", "Check the weekly goal and retention period."
+                422, "INVALID_INPUT", "Recording settings are no longer available."
             )
         if value.get("consentVersion") not in (None, "", "privacy-v1"):
             raise ApiError(422, "INVALID_INPUT", "Unknown consent version.")
@@ -431,7 +373,7 @@ def update_profile(body: dict, user_id: User):
             )
         connection.execute(
             "UPDATE profile SET display_name=%s,role_id=%s,weekly_goal=%s,education=%s,skills=%s,"
-            "timezone=%s,retention_days=%s,consent_version=%s,updated_at=CURRENT_TIMESTAMP WHERE user_id=%s",
+            "timezone=%s,consent_version=%s,updated_at=CURRENT_TIMESTAMP WHERE user_id=%s",
             (
                 str(value["displayName"]).strip()[:100] or "Student",
                 value["roleId"],
@@ -439,7 +381,6 @@ def update_profile(body: dict, user_id: User):
                 str(value.get("education", ""))[:500],
                 dumps(value.get("skills", [])),
                 value.get("timezone", "Asia/Kolkata"),
-                int(value["retentionDays"]),
                 value.get("consentVersion") or None,
                 user_id,
             ),
@@ -464,12 +405,13 @@ def catalog(_: User):
         "subjects": ["DSA", "DBMS", "OS"],
         "difficulties": ["EASY", "MEDIUM", "HARD"],
         "englishPrompt": {
-            "version": "intro-v1",
+            "version": "intro-written-v1",
             "text": "Introduce yourself, describe one project and your contribution, and explain your career goal.",
         },
     }
 
 
+# Subject tests: server-selected questions, saved answers, and scoring.
 @app.post("/api/v1/tests/attempts")
 def create_test(
     body: dict,
@@ -771,6 +713,7 @@ def test_result(activity_id: str, user_id: User):
         )
 
 
+# Interviews: persisted turns and follow-up evaluation.
 def require_consent(connection, user_id: str):
     if (
         one(
@@ -835,13 +778,13 @@ def create_interview(
     kind, difficulty, mode, minutes = (
         body.get("type"),
         body.get("difficulty"),
-        body.get("answerMode"),
+        body.get("answerMode", "TEXT"),
         body.get("minutes"),
     )
     if (
         kind not in ("TECHNICAL", "HR", "MIXED")
         or difficulty not in ("EASY", "MEDIUM", "HARD")
-        or mode not in ("TEXT", "VOICE")
+        or mode != "TEXT"
         or minutes not in (10, 20, 30)
         or not skills
     ):
@@ -936,14 +879,13 @@ def get_interview(activity_id: str, user_id: User):
 def answer_interview(activity_id: str, body: dict, user_id: User):
     sequence, answer = body.get("sequence"), (body.get("text") or "").strip()
     submission = body.get("submissionKey")
-    media_id = body.get("mediaId")
     if (
         not isinstance(sequence, int)
         or not answer
         or len(answer) > 8000
         or not submission
         or len(submission) > 100
-        or (media_id is not None and (not isinstance(media_id, str) or not media_id))
+        or "mediaId" in body
     ):
         raise ApiError(
             422, "INVALID_INPUT", "An answer and submission key are required."
@@ -956,30 +898,13 @@ def answer_interview(activity_id: str, body: dict, user_id: User):
             (activity_id, sequence),
         )
         if turn["answer"] is not None:
-            if (
-                turn["answer"] != answer
-                or turn["submission_key"] != submission
-                or turn["media_id"] != media_id
-            ):
+            if turn["answer"] != answer or turn["submission_key"] != submission:
                 raise ApiError(
                     409,
                     "ANSWER_EXISTS",
                     "This question already has an accepted answer.",
                 )
         else:
-            if media_id is not None:
-                media = one(
-                    connection,
-                    "SELECT state FROM media WHERE id=%s AND user_id=%s",
-                    (media_id, user_id),
-                    required=False,
-                )
-                if media is None or media["state"] != "READY":
-                    raise ApiError(
-                        422,
-                        "MEDIA_NOT_READY",
-                        "Review the transcript before attaching this recording.",
-                    )
             session = one(
                 connection,
                 "SELECT * FROM interview_session WHERE activity_id=%s FOR UPDATE",
@@ -1000,8 +925,8 @@ def answer_interview(activity_id: str, body: dict, user_id: User):
                     "Interview time has expired. Finish for your report.",
                 )
             connection.execute(
-                "UPDATE interview_turn SET answer=%s,media_id=%s,submission_key=%s WHERE id=%s",
-                (answer, media_id, submission, turn["id"]),
+                "UPDATE interview_turn SET answer=%s,submission_key=%s WHERE id=%s",
+                (answer, submission, turn["id"]),
             )
             connection.execute(
                 "UPDATE interview_session SET remaining_seconds=%s,current_started=NULL WHERE activity_id=%s",
@@ -1266,6 +1191,7 @@ def interview_report(activity_id: str, user_id: User):
         )
 
 
+# Shared scoring status and retry API.
 def scoring_view(connection, activity: dict) -> dict:
     report = loads(activity["report"])
     job = one(
@@ -1341,14 +1267,14 @@ def request_scoring(
             require_consent(connection, user_id)
             attempt = one(
                 connection,
-                "SELECT confirmed_transcript FROM english_attempt WHERE activity_id=%s",
+                "SELECT answer FROM english_attempt WHERE activity_id=%s",
                 (activity_id,),
             )
-            if not attempt["confirmed_transcript"]:
+            if not attempt["answer"]:
                 raise ApiError(
                     409,
                     "ANSWER_REQUIRED",
-                    "Submit your recording and confirmed transcript first.",
+                    "Submit your written answer first.",
                 )
             kind, state = "ENGLISH_REPORT", "PROCESSING"
         else:
@@ -1426,6 +1352,10 @@ def retry_job(job_id: str, user_id: User):
             "SELECT * FROM job WHERE id=%s AND user_id=%s FOR UPDATE",
             (job_id, user_id),
         )
+        if job["kind"] not in _worker_kinds:
+            raise ApiError(
+                409, "FEATURE_REMOVED", "This job type is no longer supported."
+            )
         if job["state"] != "FAILED":
             return job_view(job)
         if job["attempts"] >= 5:
@@ -1441,172 +1371,7 @@ def retry_job(job_id: str, user_id: User):
         return {**job_view(job), "state": "QUEUED", "errorCode": None}
 
 
-def media_view(row: dict) -> dict:
-    return {
-        "id": row["id"],
-        "state": row["state"],
-        "durationSeconds": row["duration_seconds"],
-        "transcript": row["transcript"],
-        "expiresAt": row["delete_after"],
-    }
-
-
-def validate_wav(path, size: int) -> float:
-    if size < 32044 or size > 6_000_000:
-        raise ApiError(
-            422, "INVALID_AUDIO", "Record between one second and three minutes."
-        )
-    try:
-        with wave.open(str(path), "rb") as audio_file:
-            if (
-                audio_file.getnchannels() != 1
-                or audio_file.getframerate() != 16000
-                or audio_file.getsampwidth() != 2
-            ):
-                raise ApiError(
-                    422, "INVALID_AUDIO", "Use mono 16 kHz 16-bit WAV audio."
-                )
-            frames = audio_file.getnframes()
-            duration = frames / 16000
-            samples = audio_file.readframes(min(frames, 16000))
-        if not 1 <= duration <= 180 or max(samples, default=0) == min(
-            samples, default=0
-        ):
-            raise ApiError(
-                422, "INVALID_AUDIO", "No clear speech was detected. Record again."
-            )
-        return duration
-    except (wave.Error, EOFError) as error:
-        raise ApiError(
-            422, "INVALID_AUDIO", "The recording is not a valid WAV file."
-        ) from error
-
-
-@app.post("/api/v1/media")
-def upload_media(user_id: User, file: UploadFile = File(...)):
-    media_id = str(uuid.uuid4())
-    destination = config.MEDIA_ROOT / f"{media_id}.wav"
-    digest = hashlib.sha256()
-    size = 0
-    with destination.open("wb") as output:
-        while chunk := file.file.read(64 * 1024):
-            size += len(chunk)
-            if size > 6_000_000:
-                output.close()
-                destination.unlink(missing_ok=True)
-                raise ApiError(422, "INVALID_AUDIO", "The recording is too large.")
-            digest.update(chunk)
-            output.write(chunk)
-    try:
-        duration = validate_wav(destination, size)
-        with transaction() as connection:
-            existing = one(
-                connection,
-                "SELECT * FROM media WHERE user_id=%s AND checksum=%s",
-                (user_id, digest.hexdigest()),
-                required=False,
-            )
-            if existing:
-                destination.unlink(missing_ok=True)
-                job = enqueue_job(
-                    connection,
-                    user_id,
-                    "TRANSCRIBE",
-                    existing["id"],
-                    {"mediaId": existing["id"]},
-                )
-                return {"media": media_view(existing), "jobId": job["id"]}
-            retention = one(
-                connection,
-                "SELECT retention_days FROM profile WHERE user_id=%s",
-                (user_id,),
-            )["retention_days"]
-            connection.execute(
-                "INSERT INTO media(id,user_id,storage_key,bytes,duration_seconds,checksum,state,delete_after) "
-                "VALUES(%s,%s,%s,%s,%s,%s,'PROCESSING',%s)",
-                (
-                    media_id,
-                    user_id,
-                    destination.name,
-                    size,
-                    duration,
-                    digest.hexdigest(),
-                    now() + timedelta(days=retention),
-                ),
-            )
-            row = one(connection, "SELECT * FROM media WHERE id=%s", (media_id,))
-            job = enqueue_job(
-                connection, user_id, "TRANSCRIBE", media_id, {"mediaId": media_id}
-            )
-        return {"media": media_view(row), "jobId": job["id"]}
-    except Exception:
-        if destination.exists():
-            destination.unlink(missing_ok=True)
-        raise
-
-
-def process_transcription(user_id: str, media_id: str, job_id: str):
-    try:
-        with transaction() as connection:
-            row = one(
-                connection,
-                "SELECT * FROM media WHERE id=%s AND user_id=%s",
-                (media_id, user_id),
-            )
-            connection.execute("UPDATE job SET state='RUNNING' WHERE id=%s", (job_id,))
-        transcript = ai.transcribe(config.MEDIA_ROOT / row["storage_key"])
-        with transaction() as connection:
-            connection.execute(
-                "UPDATE media SET transcript=%s,state='READY' WHERE id=%s AND state='PROCESSING'",
-                (transcript, media_id),
-            )
-        mark_job(job_id, "COMPLETED")
-    except Exception as error:
-        mark_job(job_id, "FAILED", type(error).__name__)
-
-
-@app.get("/api/v1/media/{media_id}")
-def get_media(media_id: str, user_id: User):
-    with transaction() as connection:
-        return media_view(
-            one(
-                connection,
-                "SELECT * FROM media WHERE id=%s AND user_id=%s",
-                (media_id, user_id),
-            )
-        )
-
-
-@app.get("/api/v1/media/{media_id}/audio")
-def get_audio(media_id: str, user_id: User):
-    with transaction() as connection:
-        row = one(
-            connection,
-            "SELECT * FROM media WHERE id=%s AND user_id=%s",
-            (media_id, user_id),
-        )
-    return FileResponse(
-        config.MEDIA_ROOT / row["storage_key"],
-        media_type="audio/wav",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-@app.delete("/api/v1/media/{media_id}")
-def delete_media(media_id: str, user_id: User):
-    with transaction() as connection:
-        row = one(
-            connection,
-            "SELECT * FROM media WHERE id=%s AND user_id=%s FOR UPDATE",
-            (media_id, user_id),
-        )
-        connection.execute(
-            "UPDATE media SET state='DELETED',transcript=NULL WHERE id=%s", (media_id,)
-        )
-    (config.MEDIA_ROOT / row["storage_key"]).unlink(missing_ok=True)
-    return {"deleted": True}
-
-
+# Written English self-introduction.
 @app.post("/api/v1/english/attempts")
 def create_english(
     body: dict,
@@ -1616,20 +1381,44 @@ def create_english(
     previous = body.get("previousId") or ""
     with transaction() as connection:
         require_consent(connection, user_id)
+        existing = one(
+            connection,
+            "SELECT * FROM activity WHERE user_id=%s AND submission_key=%s",
+            (user_id, idempotency_key),
+            required=False,
+        )
+        if existing:
+            context = loads(existing["context"], {})
+            if (
+                existing["module"] != "ENGLISH"
+                or context.get("previousId") != previous
+                or context.get("promptVersion") != "intro-written-v1"
+            ):
+                raise ApiError(
+                    409, "IDEMPOTENCY_CONFLICT", "This request key was used before."
+                )
+            return {"activity": activity_view(existing)}
         group = str(uuid.uuid4())
         if previous:
             prior = owned_activity(connection, user_id, previous)
             if prior["module"] != "ENGLISH":
                 raise ApiError(404, "NOT_FOUND", "The previous attempt was not found.")
-            group = one(
+            prior_attempt = one(
                 connection,
-                "SELECT group_id FROM english_attempt WHERE activity_id=%s",
+                "SELECT group_id,prompt_version FROM english_attempt WHERE activity_id=%s",
                 (previous,),
-            )["group_id"]
+            )
+            if prior_attempt["prompt_version"] != "intro-written-v1":
+                raise ApiError(
+                    409,
+                    "INCOMPATIBLE_ATTEMPT",
+                    "Start a new written self-introduction attempt.",
+                )
+            group = prior_attempt["group_id"]
         context = {
             "previousId": previous,
             "retryGroup": group,
-            "promptVersion": "intro-v1",
+            "promptVersion": "intro-written-v1",
         }
         activity = create_activity(
             connection, user_id, "ENGLISH", idempotency_key, context
@@ -1641,40 +1430,35 @@ def create_english(
             required=False,
         ):
             connection.execute(
-                "INSERT INTO english_attempt(activity_id,group_id,previous_id) VALUES(%s,%s,%s)",
-                (activity["id"], group, previous or None),
+                "INSERT INTO english_attempt(activity_id,group_id,previous_id,prompt_version) VALUES(%s,%s,%s,%s)",
+                (activity["id"], group, previous or None, "intro-written-v1"),
             )
         return {"activity": activity_view(activity)}
 
 
 @app.post("/api/v1/english/attempts/{activity_id}/submit")
 def submit_english(activity_id: str, body: dict, user_id: User):
+    answer = body.get("text")
+    if (
+        set(body) != {"text"}
+        or not isinstance(answer, str)
+        or not 1 <= len(answer.strip()) <= 8000
+    ):
+        raise ApiError(
+            422, "INVALID_INPUT", "Enter a written introduction before submitting."
+        )
+    answer = answer.strip()
     with transaction() as connection:
         activity = owned_activity(connection, user_id, activity_id, True)
         if activity["module"] != "ENGLISH":
             raise ApiError(404, "NOT_FOUND", "The English attempt was not found.")
-        media = one(
-            connection,
-            "SELECT * FROM media WHERE id=%s AND user_id=%s",
-            (body.get("mediaId"), user_id),
-        )
-        if media["state"] != "READY":
-            raise ApiError(422, "MEDIA_PROCESSING", "Wait for transcription to finish.")
-        confirmed = (body.get("transcript") or media["transcript"] or "").strip()
-        if not confirmed or len(confirmed) > 8000:
-            raise ApiError(
-                422, "INVALID_INPUT", "Review the transcript before submitting."
-            )
         attempt = one(
             connection,
             "SELECT * FROM english_attempt WHERE activity_id=%s",
             (activity_id,),
         )
         if activity["state"] != "ACTIVE":
-            if (
-                attempt["media_id"] != media["id"]
-                or attempt["confirmed_transcript"] != confirmed
-            ):
+            if attempt["answer"] != answer:
                 raise ApiError(
                     409,
                     "ANSWER_EXISTS",
@@ -1689,15 +1473,8 @@ def submit_english(activity_id: str, body: dict, user_id: User):
             )
             return {"activityId": activity_id, "jobId": job["id"]}
         connection.execute(
-            "UPDATE english_attempt SET media_id=%s,raw_transcript=%s,confirmed_transcript=%s,edited=%s "
-            "WHERE activity_id=%s",
-            (
-                media["id"],
-                media["transcript"],
-                confirmed,
-                confirmed != media["transcript"],
-                activity_id,
-            ),
+            "UPDATE english_attempt SET answer=%s WHERE activity_id=%s",
+            (answer, activity_id),
         )
         connection.execute(
             "UPDATE activity SET state='PROCESSING' WHERE id=%s", (activity_id,)
@@ -1719,39 +1496,22 @@ def process_english(user_id: str, activity_id: str, job_id: str):
             activity = owned_activity(connection, user_id, activity_id, True)
             attempt = one(
                 connection,
-                "SELECT e.*,m.duration_seconds FROM english_attempt e JOIN media m ON m.id=e.media_id "
-                "WHERE e.activity_id=%s",
+                "SELECT * FROM english_attempt WHERE activity_id=%s",
                 (activity_id,),
             )
         prompt = "Introduce yourself, describe one project and your contribution, and explain your career goal."
-        evaluation = ai.evaluate(
-            "ENGLISH", prompt, prompt, attempt["confirmed_transcript"]
-        )
-        # Delivery metrics describe the recording's raw transcript, even when edited.
-        words = len(attempt["raw_transcript"].split())
-        fillers = sum(
-            attempt["raw_transcript"].lower().split().count(term)
-            for term in ("um", "uh", "like")
-        )
+        evaluation = ai.evaluate("ENGLISH", prompt, prompt, attempt["answer"])
         result_score = (
             ai.score("ENGLISH", evaluation["dimensions"])
             if evaluation["scorable"]
             else None
         )
-        metrics = {
-            "wordCount": words,
-            "speakingRate": round(words * 60 / attempt["duration_seconds"], 1),
-            "fillerCount": fillers,
-            "source": "rawTranscript",
-        }
         report = {
             "module": "ENGLISH",
             "score": result_score,
             "evaluation": evaluation,
-            "transcript": attempt["confirmed_transcript"],
-            "rawTranscript": attempt["raw_transcript"],
-            "edited": attempt["edited"],
-            "metrics": metrics,
+            "answer": attempt["answer"],
+            "promptVersion": attempt["prompt_version"],
             "rubricVersion": evaluation["rubricVersion"],
         }
         with transaction() as connection:
@@ -1794,562 +1554,17 @@ def english_report(activity_id: str, user_id: User):
         )
 
 
-def progress_summary(connection, user_id: str) -> dict:
-    rows = all_rows(
-        connection,
-        "SELECT * FROM progress_activity WHERE user_id=%s ORDER BY completed_at DESC,activity_id",
-        (user_id,),
-    )
-    seen, scores, evidence = set(), {}, {}
-    for row in rows:
-        if row["retry_group"] in seen:
-            continue
-        seen.add(row["retry_group"])
-        module = row["module"]
-        evidence[module] = evidence.get(module, 0) + 1
-        if len(scores.setdefault(module, [])) < 5:
-            scores[module].append(float(row["score"]))
-    module_scores = {
-        key: round(sum(values) / len(values), 1) for key, values in scores.items()
-    }
-    overall = None
-    if all(key in module_scores for key in ("INTERVIEW", "TEST", "ENGLISH")):
-        overall = round(
-            module_scores["INTERVIEW"] * 0.4
-            + module_scores["TEST"] * 0.4
-            + module_scores["ENGLISH"] * 0.2,
-            1,
-        )
-    profile = profile_row(connection, user_id)
-    monday = (now() - timedelta(days=now().weekday())).date()
-    weekly = sum(1 for row in rows if row["completed_at"].date() >= monday)
-    label = (
-        "Build your baseline"
-        if overall is None
-        else (
-            "Practice score"
-            if evidence and all(value >= 3 for value in evidence.values())
-            else "Early estimate"
-        )
-    )
-    return {
-        "overallScore": overall,
-        "moduleScores": module_scores,
-        "evidenceCounts": evidence,
-        "scoreLabel": label,
-        "weeklyCompleted": weekly,
-        "weeklyGoal": profile["weeklyGoal"],
-        "scoringVersion": "v1",
-        "eligibleActivities": len(rows),
-        "weights": {"INTERVIEW": 40, "TEST": 40, "ENGLISH": 20},
-    }
+# Independent read and account routes keep this module focused on assessment state.
+app.include_router(progress.router)
 
 
-def competencies(connection, user_id: str) -> list[dict]:
-    rows = all_rows(
-        connection,
-        "SELECT e.competency,e.score,p.completed_at,p.retry_group FROM competency_evidence e "
-        "JOIN progress_activity p ON p.activity_id=e.activity_id WHERE p.user_id=%s "
-        "ORDER BY p.completed_at DESC",
-        (user_id,),
-    )
-    seen, grouped, dates = set(), {}, {}
-    for row in rows:
-        marker = (row["competency"], row["retry_group"])
-        if marker in seen:
-            continue
-        seen.add(marker)
-        values = grouped.setdefault(row["competency"], [])
-        if len(values) < 5:
-            values.append(float(row["score"]))
-        dates.setdefault(row["competency"], row["completed_at"])
-    return [
-        {
-            "id": key,
-            "score": round(sum(values) / len(values), 1),
-            "evidenceCount": len(values),
-            "lastAssessedAt": dates[key],
-            "needsRefresh": dates[key] < now() - timedelta(days=30),
-        }
-        for key, values in sorted(grouped.items())
-    ]
+app.include_router(account.router)
 
 
-def recommendations(connection, user_id: str) -> list[dict]:
-    summary = progress_summary(connection, user_id)
-    dismissed = {
-        row["rule_key"]
-        for row in all_rows(
-            connection,
-            "SELECT rule_key FROM recommendation_dismissal WHERE user_id=%s AND until_at>CURRENT_TIMESTAMP",
-            (user_id,),
-        )
-    }
-    result = []
-    for module in ("TEST", "INTERVIEW", "ENGLISH"):
-        key = f"baseline:{module}"
-        if module not in summary["moduleScores"] and key not in dismissed:
-            result.append(
-                {
-                    "id": key,
-                    "module": module,
-                    "topicId": "",
-                    "title": f"Build your {module.lower()} baseline",
-                    "reason": "Complete one activity to establish an initial score.",
-                    "difficulty": "EASY",
-                    "ruleVersion": "v1",
-                }
-            )
-    for item in sorted(
-        competencies(connection, user_id), key=lambda value: value["score"]
-    ):
-        key = "topic:" + item["id"]
-        if key in dismissed:
-            continue
-        identifier = item["id"]
-        module = (
-            "ENGLISH"
-            if identifier.startswith("english-")
-            else (
-                "TEST"
-                if identifier.startswith(("dsa-", "dbms-", "os-"))
-                else "INTERVIEW"
-            )
-        )
-        result.append(
-            {
-                "id": key,
-                "module": module,
-                "topicId": identifier,
-                "title": "Practise " + identifier.replace("-", " "),
-                "reason": "Recent evidence suggests this is your best next practice topic.",
-                "difficulty": "EASY" if item["score"] < 60 else "MEDIUM",
-                "ruleVersion": "v1",
-            }
-        )
-    return result[:3]
+app.include_router(admin.router)
 
 
-@app.get("/api/v1/dashboard")
-def dashboard(user_id: User):
-    with transaction() as connection:
-        return {
-            **progress_summary(connection, user_id),
-            "displayName": profile_row(connection, user_id)["displayName"],
-            "recommendations": recommendations(connection, user_id),
-        }
-
-
-@app.get("/api/v1/progress")
-def progress(user_id: User, days: int = 30):
-    if not 1 <= days <= 365:
-        raise ApiError(422, "INVALID_INPUT", "Choose a period from 1 to 365 days.")
-    with transaction() as connection:
-        timeline = [
-            {"at": row["created_at"], "summary": loads(row["summary"], {})}
-            for row in all_rows(
-                connection,
-                "SELECT summary,created_at FROM progress_snapshot WHERE user_id=%s AND created_at>=%s ORDER BY created_at",
-                (user_id, now() - timedelta(days=days)),
-            )
-        ]
-        return {"summary": progress_summary(connection, user_id), "timeline": timeline}
-
-
-@app.get("/api/v1/competencies")
-def get_competencies(user_id: User):
-    with transaction() as connection:
-        return competencies(connection, user_id)
-
-
-@app.get("/api/v1/activities")
-def activities(user_id: User, module: str = ""):
-    with transaction() as connection:
-        rows = all_rows(
-            connection,
-            "SELECT * FROM activity WHERE user_id=%s ORDER BY created_at DESC",
-            (user_id,),
-        )
-        return [
-            {
-                "id": row["id"],
-                "module": row["module"],
-                "state": row["state"],
-                "score": row["score"],
-                "createdAt": row["created_at"],
-                "completedAt": row["completed_at"],
-            }
-            for row in rows
-            if not module or row["module"] == module
-        ]
-
-
-@app.get("/api/v1/recommendations")
-def get_recommendations(user_id: User):
-    with transaction() as connection:
-        return recommendations(connection, user_id)
-
-
-@app.patch("/api/v1/recommendations/{rule_id:path}")
-def dismiss_recommendation(rule_id: str, user_id: User):
-    with transaction() as connection:
-        if rule_id not in {item["id"] for item in recommendations(connection, user_id)}:
-            raise ApiError(422, "INVALID_INPUT", "Unknown recommendation.")
-        connection.execute(
-            "INSERT INTO recommendation_dismissal(user_id,rule_key,until_at) VALUES(%s,%s,%s) "
-            "ON CONFLICT(user_id,rule_key) DO UPDATE SET until_at=EXCLUDED.until_at",
-            (user_id, rule_id, now() + timedelta(days=3)),
-        )
-    return {"dismissed": True}
-
-
-def require_recent_auth(connection, user_id: str):
-    recent = one(
-        connection,
-        "SELECT 1 ok FROM login_session WHERE user_id=%s AND authenticated_at>=%s LIMIT 1",
-        (user_id, now() - timedelta(minutes=5)),
-        required=False,
-    )
-    if not recent:
-        raise ApiError(401, "REAUTHENTICATION_REQUIRED", "Confirm your password again.")
-
-
-@app.post("/api/v1/me/exports")
-def export_account(background: BackgroundTasks, user_id: User):
-    with transaction() as connection:
-        require_recent_auth(connection, user_id)
-        profile = profile_row(connection, user_id)
-        activity_rows = all_rows(
-            connection,
-            "SELECT * FROM activity WHERE user_id=%s ORDER BY created_at",
-            (user_id,),
-        )
-        media_rows = all_rows(
-            connection,
-            "SELECT * FROM media WHERE user_id=%s AND state!='DELETED'",
-            (user_id,),
-        )
-        test_rows = all_rows(
-            connection,
-            "SELECT i.activity_id,i.position,q.prompt,q.type,i.response,i.marked,i.points,"
-            "i.grading_status,i.feedback FROM test_item i JOIN activity a ON a.id=i.activity_id "
-            "JOIN question q ON q.id=i.question_id WHERE a.user_id=%s ORDER BY a.created_at,i.position",
-            (user_id,),
-        )
-        interview_rows = all_rows(
-            connection,
-            "SELECT t.activity_id,t.sequence,t.topic,t.kind,t.prompt,t.answer,t.evaluation "
-            "FROM interview_turn t JOIN activity a ON a.id=t.activity_id WHERE a.user_id=%s "
-            "ORDER BY a.created_at,t.sequence",
-            (user_id,),
-        )
-        english_rows = all_rows(
-            connection,
-            "SELECT e.* FROM english_attempt e JOIN activity a ON a.id=e.activity_id "
-            "WHERE a.user_id=%s ORDER BY a.created_at",
-            (user_id,),
-        )
-    temp = tempfile.NamedTemporaryFile(
-        prefix="interviewedge-export-", suffix=".zip", delete=False
-    )
-    temp.close()
-    with zipfile.ZipFile(temp.name, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("profile.json", json.dumps(profile, default=str, indent=2))
-        archive.writestr(
-            "activities.json",
-            json.dumps(
-                [activity_view(row) for row in activity_rows], default=str, indent=2
-            ),
-        )
-        archive.writestr(
-            "test-responses.json", json.dumps(test_rows, default=str, indent=2)
-        )
-        archive.writestr(
-            "interview-answers.json",
-            json.dumps(interview_rows, default=str, indent=2),
-        )
-        archive.writestr(
-            "english-attempts.json", json.dumps(english_rows, default=str, indent=2)
-        )
-        archive.writestr(
-            "recordings.json",
-            json.dumps(
-                [
-                    {
-                        "id": row["id"],
-                        "durationSeconds": row["duration_seconds"],
-                        "transcript": row["transcript"],
-                        "createdAt": row["created_at"],
-                        "deleteAfter": row["delete_after"],
-                    }
-                    for row in media_rows
-                ],
-                default=str,
-                indent=2,
-            ),
-        )
-        for row in media_rows:
-            path = config.MEDIA_ROOT / row["storage_key"]
-            if path.is_file():
-                archive.write(path, f"recordings/{row['id']}.wav")
-    background.add_task(os.unlink, temp.name)
-    return FileResponse(
-        temp.name, media_type="application/zip", filename="interviewedge-export.zip"
-    )
-
-
-@app.delete("/api/v1/me")
-def delete_account(user_id: User):
-    with transaction() as connection:
-        require_recent_auth(connection, user_id)
-        media_rows = all_rows(
-            connection, "SELECT storage_key FROM media WHERE user_id=%s", (user_id,)
-        )
-        connection.execute("DELETE FROM edge_user WHERE id=%s", (user_id,))
-    for row in media_rows:
-        (config.MEDIA_ROOT / row["storage_key"]).unlink(missing_ok=True)
-    return {"deleted": True}
-
-
-def question_view(row: dict) -> dict:
-    return {
-        "id": row["id"],
-        "familyId": row["family_id"],
-        "version": row["version"],
-        "topicId": row["topic_id"],
-        "type": row["type"],
-        "difficulty": row["difficulty"],
-        "prompt": row["prompt"],
-        "options": loads(row["options"], []),
-        "answer": row["answer"],
-        "explanation": row["explanation"],
-        "criteria": loads(row["criteria"], []),
-        "source": row["source"],
-        "license": row["license"],
-        "author": row["author"],
-        "reviewer": row["reviewer"],
-        "state": row["state"],
-    }
-
-
-def validate_question(connection, body: dict):
-    required = (
-        "topicId",
-        "type",
-        "difficulty",
-        "prompt",
-        "options",
-        "answer",
-        "explanation",
-        "criteria",
-        "source",
-        "license",
-    )
-    if any(key not in body or body[key] is None for key in required):
-        raise ApiError(
-            422,
-            "INVALID_INPUT",
-            "Question, answer, explanation, source and licence are required.",
-        )
-    if body["type"] not in ("MCQ", "CODE_OUTPUT", "SHORT_ANSWER") or body[
-        "difficulty"
-    ] not in ("EASY", "MEDIUM", "HARD"):
-        raise ApiError(
-            422, "INVALID_INPUT", "Unsupported question format or difficulty."
-        )
-    if not one(
-        connection,
-        "SELECT 1 ok FROM topic WHERE id=%s",
-        (body["topicId"],),
-        required=False,
-    ):
-        raise ApiError(422, "INVALID_INPUT", "Unknown topic.")
-    if (
-        not str(body["prompt"]).strip()
-        or len(body["prompt"]) > 10_000
-        or not str(body["answer"]).strip()
-        or not str(body["explanation"]).strip()
-        or not str(body["source"]).strip()
-        or not str(body["license"]).strip()
-    ):
-        raise ApiError(422, "INVALID_INPUT", "Question fields cannot be blank.")
-    options, criteria = body["options"], body["criteria"]
-    if (
-        not isinstance(options, list)
-        or not isinstance(criteria, list)
-        or any(not str(value).strip() for value in options + criteria)
-    ):
-        raise ApiError(
-            422, "INVALID_INPUT", "Options and criteria must be non-blank lists."
-        )
-    if body["type"] != "SHORT_ANSWER" and (
-        not 2 <= len(options) <= 6
-        or len(set(options)) != len(options)
-        or body["answer"] not in options
-    ):
-        raise ApiError(
-            422,
-            "INVALID_INPUT",
-            "Objective questions need distinct options containing the answer.",
-        )
-    if body["type"] == "SHORT_ANSWER" and not criteria:
-        raise ApiError(422, "INVALID_INPUT", "Short answers require criteria.")
-
-
-def create_question(connection, actor: str, body: dict):
-    validate_question(connection, body)
-    identifier = str(uuid.uuid4())
-    family = body.get("familyId") or identifier
-    if family != identifier:
-        first = one(
-            connection,
-            "SELECT id FROM question WHERE family_id=%s AND version=1 FOR UPDATE",
-            (family,),
-            required=False,
-        )
-        if not first:
-            raise ApiError(422, "INVALID_INPUT", "Unknown question family.")
-    version = one(
-        connection,
-        "SELECT COALESCE(MAX(version),0)+1 next FROM question WHERE family_id=%s",
-        (family,),
-    )["next"]
-    connection.execute(
-        "INSERT INTO question(id,family_id,version,topic_id,type,difficulty,prompt,options,answer,explanation,criteria,source,license,author,state) "
-        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'DRAFT')",
-        (
-            identifier,
-            family,
-            version,
-            body["topicId"],
-            body["type"],
-            body["difficulty"],
-            body["prompt"],
-            dumps(body["options"]),
-            body["answer"],
-            body["explanation"],
-            dumps(body["criteria"]),
-            body["source"],
-            body["license"],
-            actor,
-        ),
-    )
-    return question_view(
-        one(connection, "SELECT * FROM question WHERE id=%s", (identifier,))
-    )
-
-
-@app.get("/api/v1/admin/questions")
-def admin_questions(_: Admin):
-    with transaction() as connection:
-        return [
-            question_view(row)
-            for row in all_rows(
-                connection,
-                "SELECT * FROM question ORDER BY topic_id,difficulty,version",
-            )
-        ]
-
-
-@app.post("/api/v1/admin/questions")
-def admin_create_question(body: dict, actor: Admin):
-    with transaction() as connection:
-        return create_question(connection, actor, body)
-
-
-@app.post("/api/v1/admin/questions/import")
-def admin_import_questions(body: list[dict], actor: Admin):
-    if not 1 <= len(body) <= 300:
-        raise ApiError(422, "INVALID_INPUT", "Import between 1 and 300 questions.")
-    with transaction() as connection:
-        for item in body:
-            validate_question(connection, item)
-        return [create_question(connection, actor, item) for item in body]
-
-
-@app.post("/api/v1/admin/questions/{question_id}/publish")
-def admin_publish_question(question_id: str, actor: Admin):
-    with transaction() as connection:
-        row = one(
-            connection, "SELECT * FROM question WHERE id=%s FOR UPDATE", (question_id,)
-        )
-        validate_question(connection, question_view(row))
-        if row["author"] == actor:
-            raise ApiError(
-                422,
-                "REVIEW_REQUIRED",
-                "A different reviewer must approve this question.",
-            )
-        if row["state"] != "DRAFT":
-            raise ApiError(409, "STATE_CONFLICT", "Only a draft can be published.")
-        connection.execute(
-            "UPDATE question SET state='RETIRED' WHERE family_id=%s AND state='PUBLISHED'",
-            (row["family_id"],),
-        )
-        connection.execute(
-            "UPDATE question SET state='PUBLISHED',reviewer=%s WHERE id=%s",
-            (actor, question_id),
-        )
-        return question_view(
-            one(connection, "SELECT * FROM question WHERE id=%s", (question_id,))
-        )
-
-
-@app.post("/api/v1/admin/questions/{question_id}/retire")
-def admin_retire_question(question_id: str, _: Admin):
-    with transaction() as connection:
-        if (
-            connection.execute(
-                "UPDATE question SET state='RETIRED' WHERE id=%s", (question_id,)
-            ).rowcount
-            != 1
-        ):
-            raise ApiError(404, "NOT_FOUND", "Question was not found.")
-    return {"retired": True}
-
-
-@app.get("/api/v1/admin/seeds")
-def admin_seeds(_: Admin):
-    with transaction() as connection:
-        return [
-            {
-                "id": row["id"],
-                "roleId": row["role_id"],
-                "kind": row["kind"],
-                "topic": row["topic"],
-                "prompt": row["prompt"],
-                "referenceAnswer": row["reference_answer"],
-                "state": row["state"],
-            }
-            for row in all_rows(connection, "SELECT * FROM interview_seed ORDER BY id")
-        ]
-
-
-@app.post("/api/v1/admin/seeds/{seed_id}/publish")
-def admin_publish_seed(seed_id: str, actor: Admin):
-    with transaction() as connection:
-        if (
-            connection.execute(
-                "UPDATE interview_seed SET state='PUBLISHED',reviewer=%s WHERE id=%s AND state='DRAFT'",
-                (actor, seed_id),
-            ).rowcount
-            != 1
-        ):
-            raise ApiError(409, "STATE_CONFLICT", "Seed is not a draft.")
-    return {"published": True}
-
-
-@app.get("/api/v1/admin/reviews")
-def admin_reviews(_: Admin):
-    with transaction() as connection:
-        return all_rows(
-            connection,
-            "SELECT i.id AS item_id,i.activity_id,i.response,i.feedback,q.prompt,q.answer,q.criteria "
-            "FROM test_item i JOIN question q ON q.id=i.question_id WHERE i.grading_status IN ('PROVISIONAL','PENDING') "
-            "ORDER BY i.activity_id",
-        )
-
-
+# Reviewer finalization stays here because it rebuilds a test report atomically.
 @app.post("/api/v1/admin/reviews/{activity_id}/{item_id}")
 def admin_review(activity_id: str, item_id: str, body: dict, actor: Admin):
     points, reason = body.get("points"), str(body.get("reason") or "").strip()

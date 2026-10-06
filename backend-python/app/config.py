@@ -11,8 +11,6 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", ROOT / ".runtime" / "media")).resolve()
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b")
-WHISPER_EXECUTABLE = os.getenv("WHISPER_EXECUTABLE", "")
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "")
 ADMIN_UIDS = {
     value.strip() for value in os.getenv("ADMIN_UIDS", "").split(",") if value.strip()
 }

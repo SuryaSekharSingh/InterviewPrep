@@ -16,9 +16,9 @@ public class PracticeScreen extends BaseScreen {
         "Answer five, ten or fifteen reviewed questions at your level.",
         () -> navigate("TestSetup", args()));
     card(
-        "03 / COMMUNICATION · 2 MIN",
-        "Self-introduction",
-        "Record, review your transcript and compare your next attempt.",
+        "03 / ENGLISH · WRITING",
+        "Written self-introduction",
+        "Write, review language feedback and compare your next attempt.",
         () -> navigate("English", args()));
   }
 }

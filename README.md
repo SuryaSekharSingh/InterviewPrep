@@ -15,7 +15,7 @@ The project is still under development. The Android UI redesign is paused while 
 ## What runs where
 
 - Android Studio runs the app in an emulator.
-- FastAPI, PostgreSQL, Ollama and whisper.cpp run on the laptop.
+- FastAPI, PostgreSQL and Ollama run on the laptop.
 - The emulator reaches the laptop backend through Android Debug Bridge port forwarding.
 - PostgreSQL stores accounts and application data. Room/SQLite stores only Android cache and drafts.
 
@@ -50,6 +50,8 @@ Keep this terminal open. Wait for:
 Uvicorn running on http://127.0.0.1:8080
 ```
 
+After backend code changes, stop the old backend with **Ctrl+C** and run the start command again. Running the Android app again does not restart the Python backend. The startup script now stops with a clear message if an older server already occupies port 8080.
+
 Then verify these pages on the laptop:
 
 - Health: <http://127.0.0.1:8080/health>
@@ -58,7 +60,7 @@ Then verify these pages on the laptop:
 
 The health response should contain `"backend":"FastAPI"` and `"status":"UP"`.
 
-Ollama is needed for interview, English and short-answer evaluation. Login, profiles and objective tests continue to work without it. whisper.cpp is needed only for recorded answers.
+Ollama is needed for interview, written English and short-answer evaluation. Login, profiles and objective tests continue to work without it.
 
 ## Run the Android app in the emulator
 
@@ -87,9 +89,9 @@ Run `connect-emulator.ps1` again whenever the emulator is restarted. It forwards
 
 ## Complete a mock interview
 
-From **Practice → Mock interview**, choose a role, skills, style, answer mode and duration. In voice mode, tap **Record answer**, then **Stop recording**. **Play recording** checks the saved audio on the emulator. **Review transcript** uploads it to the laptop and shows the recognized words in the answer field; correct recognition mistakes there. Tap **Submit answer and continue**. The app saves the answer, pauses answer time while the laptop evaluates it, and then shows the next question. Use **Check for next question** if the processing screen is still visible. **Finish interview** ends the session and opens its report.
+From **Practice → Mock interview**, choose a role, skills, style and duration. Type your answer and tap **Submit answer and continue**. The app saves it, pauses answer time while the laptop evaluates it, and then shows the next question. Use **Check for next question** if the processing screen is still visible. **Finish interview** ends the session and opens its report.
 
-If transcription fails, the recording remains on the device and **Retry transcription** is available. You can also type the answer and choose **Submit text only**; that answer is scored as text without attaching the audio. The backend and Ollama must be running for feedback and follow-up questions. Voice transcription also needs whisper.cpp. A failed processing job appears with a retry action.
+The backend and Ollama must be running for feedback and follow-up questions. A failed processing job appears with a retry action. **Practice → Written self-introduction** accepts typed English, provides grammar/clarity/relevance feedback and supports retry comparison.
 
 ## Verification
 

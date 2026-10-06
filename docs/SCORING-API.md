@@ -1,6 +1,6 @@
 # AI scoring API
 
-The Python backend uses local Ollama to evaluate technical/HR interview answers, English transcripts and subject-test short answers. Objective MCQ and code-output answers are checked against the published answer key. The backend calculates totals from validated rubric dimensions; the model cannot supply a final total or change the weights.
+The Python backend uses local Ollama to evaluate technical/HR interview answers, written English introductions and subject-test short answers. Objective MCQ and code-output answers are checked against the published answer key. The backend calculates totals from validated rubric dimensions; the model cannot supply a final total or change the weights.
 
 ## Request scoring
 
@@ -16,7 +16,7 @@ Only the owner can request or retrieve an activity's score. Answers, question re
 
 - **Test:** save responses with the existing response endpoint, then request scoring to close and grade the test.
 - **Interview:** submit at least one answer with the existing interview answer endpoint. Requesting activity scoring finishes the interview and evaluates accepted answers. Do not call this endpoint after every turn; ordinary answer submission already queues each turn's evaluation.
-- **English:** upload audio, confirm the transcript and submit it through the existing English submission endpoint. Scoring runs automatically; this endpoint can retrieve/retry the same accepted work. An empty activity cannot be scored.
+- **English:** submit a written self-introduction through the English submission endpoint. Scoring runs automatically; this endpoint can retrieve/retry the same accepted work. An empty activity cannot be scored.
 
 The request returns HTTP 202 when queued and HTTP 200 when a final result can be reused. Requests for the same activity reuse the saved job or report. Poll the matching GET endpoint while processing:
 
@@ -68,7 +68,7 @@ Saved feedback includes dimensions, exact evidence excerpts, strengths, improvem
 
 For technical and HR interviews, any understandable, on-topic answer marked scorable receives at least 10/100. The backend applies this minimum through the relevance dimension, so the saved dimensions still add up to the displayed score. Correctness and reasoning remain independently rated; a relevant but incorrect answer can therefore receive the minimum without being treated as correct. Unrelated or unintelligible answers stay unscored. This policy is recorded as `rubric-v3` and `weighted-v2`; it does not change English or subject-test scoring. Existing completed reports keep their original scores.
 
-English delivery metrics use the raw transcript, even if the student edits the confirmed text. Transcript scoring does not claim to measure pronunciation or pauses. A failed interview follow-up falls back to published seed content while keeping the saved evaluation.
+English feedback assesses written grammar, clarity and relevance. A failed interview follow-up falls back to published seed content while keeping the saved evaluation.
 
 ## Tests
 

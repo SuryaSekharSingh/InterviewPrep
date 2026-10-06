@@ -6,6 +6,7 @@ import uuid
 
 from fastapi.testclient import TestClient
 
+from app import config
 from app.db import transaction
 from app.main import app
 
@@ -36,7 +37,6 @@ def consent(client: TestClient, headers: dict):
             "education": "",
             "skills": ["java-language", "oop", "collections"],
             "timezone": "Asia/Kolkata",
-            "retentionDays": 7,
             "consentVersion": "privacy-v1",
         },
     )
@@ -146,6 +146,33 @@ def test_recovery_rotates_session_and_codes():
                 "/api/v1/me", headers={"Authorization": "Bearer " + created["token"]}
             ).status_code
             == 401
+        )
+
+
+def test_account_export_and_deletion_keep_owner_boundaries():
+    with TestClient(app) as client:
+        _, headers = register(client)
+        _, other_headers = register(client)
+        export = client.post("/api/v1/me/exports", headers=headers)
+        assert export.status_code == 200
+        assert export.headers["content-type"] == "application/zip"
+        assert client.delete("/api/v1/me", headers=headers).json() == {"deleted": True}
+        assert client.get("/api/v1/me", headers=headers).status_code == 401
+        assert client.get("/api/v1/me", headers=other_headers).status_code == 200
+
+
+def test_admin_routes_keep_role_checks(monkeypatch):
+    with TestClient(app) as client:
+        admin, headers = register(client)
+        _, other_headers = register(client)
+        monkeypatch.setattr(config, "ADMIN_UIDS", {admin["userId"]})
+        for path in ("questions", "seeds", "reviews"):
+            assert (
+                client.get(f"/api/v1/admin/{path}", headers=headers).status_code == 200
+            )
+        assert (
+            client.get("/api/v1/admin/questions", headers=other_headers).status_code
+            == 403
         )
 
 
