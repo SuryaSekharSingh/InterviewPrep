@@ -264,3 +264,49 @@ def admin_reviews(_: Admin):
             "FROM test_item i JOIN question q ON q.id=i.question_id WHERE i.grading_status IN ('PROVISIONAL','PENDING') "
             "ORDER BY i.activity_id",
         )
+
+
+@router.post("/api/v1/admin/reviews/{activity_id}/{item_id}")
+def admin_review(activity_id: str, item_id: str, body: dict, actor: Admin):
+    from .tests import build_test_report
+
+    points, reason = body.get("points"), str(body.get("reason") or "").strip()
+    if (
+        type(points) not in (int, float)
+        or not 0 <= points <= 100
+        or not reason
+        or len(reason) > 2000
+    ):
+        raise ApiError(
+            422,
+            "INVALID_INPUT",
+            "A score from 0 to 100 and review reason are required.",
+        )
+    with transaction() as connection:
+        activity = one(
+            connection, "SELECT * FROM activity WHERE id=%s FOR UPDATE", (activity_id,)
+        )
+        running = one(
+            connection,
+            "SELECT id FROM job WHERE activity_id=%s AND state IN ('QUEUED','RUNNING')",
+            (activity_id,),
+            required=False,
+        )
+        if running:
+            raise ApiError(
+                409, "STATE_CONFLICT", "Wait for scoring to finish before reviewing."
+            )
+        changed = connection.execute(
+            "UPDATE test_item SET points=%s,grading_status='REVIEWED',feedback=%s "
+            "WHERE id=%s AND activity_id=%s AND grading_status IN ('PROVISIONAL','PENDING')",
+            (
+                points,
+                dumps({"reviewer": actor, "reason": reason}),
+                item_id,
+                activity_id,
+            ),
+        ).rowcount
+        if changed != 1:
+            raise ApiError(409, "STATE_CONFLICT", "Item is not awaiting review.")
+        build_test_report(connection, activity)
+    return {"reviewed": True}

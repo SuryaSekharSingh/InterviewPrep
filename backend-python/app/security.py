@@ -6,8 +6,10 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from typing import Annotated
+
 import bcrypt
-from fastapi import Header
+from fastapi import APIRouter, Depends, Header
 from psycopg.errors import UniqueViolation
 
 from .db import one, transaction
@@ -181,3 +183,54 @@ def change_password(user_id: str, current: str, new: str):
         )
         connection.execute("DELETE FROM login_session WHERE user_id=%s", (user_id,))
         return _session(connection, user_id, _codes(connection, user_id))
+
+
+router = APIRouter()
+
+
+@router.post("/api/v1/auth/register")
+def auth_register(body: dict):
+    return register(body.get("username"), body.get("password"))
+
+
+@router.post("/api/v1/auth/login")
+def auth_login(body: dict):
+    return login(body.get("username"), body.get("password"))
+
+
+@router.post("/api/v1/auth/recover")
+def auth_recover(body: dict):
+    return recover(
+        body.get("username"), body.get("recoveryCode"), body.get("newPassword")
+    )
+
+
+@router.post("/api/v1/auth/password")
+def auth_password(body: dict, user_id: Annotated[str, Depends(current_user)]):
+    return change_password(
+        user_id, body.get("currentPassword"), body.get("newPassword")
+    )
+
+
+@router.post("/api/v1/auth/reauthenticate")
+def auth_reauthenticate(body: dict, user_id: Annotated[str, Depends(current_user)]):
+    with transaction() as connection:
+        account = one(
+            connection,
+            "SELECT username FROM local_account WHERE user_id=%s",
+            (user_id,),
+        )
+    return login(account["username"], body.get("password"))
+
+
+@router.post("/api/v1/auth/logout")
+def auth_logout(
+    authorization: Annotated[str, Header()], _: Annotated[str, Depends(current_user)]
+):
+    with transaction() as connection:
+        connection.execute(
+            "DELETE FROM login_session WHERE token_hash=%s",
+            (token_hash(authorization[7:]),),
+        )
+    return {"signedOut": True}
+
